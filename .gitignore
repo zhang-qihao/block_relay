@@ -1,3 +1,6 @@
 node_modules/
 .DS_Store
 .test-artifacts/
+.run/
+logs/
+block-relay.log
