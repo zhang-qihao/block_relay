@@ -71,24 +71,33 @@ function browserFixture() {
     send(message) { this.sent.push(JSON.parse(message)); }
     receive(message) { this.fire('message', { data: JSON.stringify(message) }); }
   }
+  const timerCallbacks = new Map();
+  let timerId = 0;
+  const windowEvents = {};
+  const actions = [...html.matchAll(/<button\s+data-action="([^"]+)"/g)].map(match => {
+    const button = new Node('button'); button.dataset.action = match[1]; return button;
+  });
+  document.querySelectorAll = selector => selector === '[data-setting]' ? all.filter(node => node.dataset.setting) : selector === '[data-action]' ? actions : [];
   const context = vm.createContext({ document, WebSocket: Socket,
     location: { protocol: 'http:', host: 'localhost:3001', port: '3001' },
     sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
     fetch: () => Promise.resolve({ json: () => Promise.resolve({ addresses: [] }) }),
-    setInterval() {}, setTimeout() {}, clearTimeout() {}, clearInterval() {}, Date, console,
-    addEventListener() {}, devicePixelRatio: 1, innerWidth: 1200, innerHeight: 900,
+    setInterval(fn) { const id = ++timerId; timerCallbacks.set(id, fn); return id; },
+    setTimeout(fn) { const id = ++timerId; timerCallbacks.set(id, fn); return id; },
+    clearTimeout(id) { timerCallbacks.delete(id); }, clearInterval(id) { timerCallbacks.delete(id); }, Date, console,
+    addEventListener(name, fn) { (windowEvents[name] ||= []).push(fn); }, devicePixelRatio: 1, innerWidth: 1200, innerHeight: 900,
     matchMedia: () => ({ matches: false, addEventListener() {} }),
     requestAnimationFrame() { return 1; }, cancelAnimationFrame() {}, performance: { now: () => 1000 },
   });
   context.window = context;
-  for (const file of ['rules.js', 'effects.js', 'app.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '../public', file), 'utf8'), context, { filename: file });
+  for (const file of ['rules.js', 'audio.js', 'effects.js', 'app.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '../public', file), 'utf8'), context, { filename: file });
   const ws = sockets[0];
   ws.fire('open');
   ws.receive({ type: 'joined', id: '0', token: 'test' });
   const players = [0, 1, 2].map(i => ({ id: String(i), name: `玩家${i}`, team: i % 2 ? 'blue' : 'red', connected: true, ready: true, rank: null,
     game: snapshotGame(createGame(42)) }));
   const room = { code: 'ABCD', hostId: '0', roundId: 1, effects: [], status: 'lobby', settings: { ...Rules.defaults }, players, events: [], serverNow: Date.now() };
-  return { nodes, ws, room, receive: () => ws.receive({ type: 'state', room }) };
+  return { nodes, ws, room, actions, timers: timerCallbacks, windowEvents, receive: () => ws.receive({ type: 'state', room }) };
 }
 
 test('real client scripts render every mode and attack configuration without runtime errors', () => {
@@ -282,6 +291,113 @@ test('reserve does not truncate large queues or replay historical cancellation',
   receive();
   assert.equal(nodes.get('attackQueue').children.length, 25);
   assert.equal(nodes.get('cancelledRows').children.length, 0);
+});
+
+test('manual target label and selected monitor use previous player, not first opponent', () => {
+  const { room, receive, nodes } = browserFixture();
+  room.status = 'playing';
+  room.settings.attack = 'manual';
+  receive();
+  assert.equal(nodes.get('targetName').textContent, '玩家2');
+  assert.equal(nodes.get('playerMonitors').children[2].attributes['aria-pressed'], 'true');
+  room.players[0].targetId = '1';
+  receive();
+  assert.equal(nodes.get('targetName').textContent, '玩家1');
+  room.players[1].game.alive = false;
+  receive();
+  assert.equal(nodes.get('targetName').textContent, '玩家2');
+});
+
+test('eliminated spectator selects effects, clicks board coordinates and cancels drag taps', () => {
+  const { room, receive, nodes, ws } = browserFixture();
+  room.status = 'playing';
+  receive();
+  assert.equal(nodes.get('spectatorTools').classes.has('is-hidden'), true);
+  room.players[0].game.alive = false;
+  receive();
+  assert.equal(nodes.get('spectatorTools').classes.has('is-hidden'), false);
+  assert.equal(nodes.get('spectatorEffectButtons').children.length, 5);
+  const buttons = nodes.get('spectatorEffectButtons').children;
+  buttons[1].fire('click');
+  assert.equal(buttons[1].attributes['aria-pressed'], 'true');
+  assert.equal(buttons[0].attributes['aria-pressed'], 'false');
+  const card = nodes.get('playerMonitors').children[1];
+  assert.equal(card.disabled, false);
+  const before = ws.sent.length;
+  card.fire('pointerdown', { pointerId: 1, clientX: 125, clientY: 250 });
+  card.fire('pointermove', { pointerId: 1, clientX: 160, clientY: 250 });
+  card.fire('click', { detail: 1, clientX: 160, clientY: 250 });
+  assert.equal(ws.sent.length, before);
+  card.fire('pointerdown', { pointerId: 1, clientX: 250, clientY: 250 });
+  card.fire('click', { detail: 1, clientX: 250, clientY: 250 });
+  assert.equal(ws.sent.length, before);
+  card.fire('pointerdown', { pointerId: 1, clientX: 125, clientY: 250 });
+  card.fire('click', { detail: 1, clientX: 125, clientY: 250 });
+  const tap = ws.sent.at(-1);
+  assert.equal(tap.type, 'spectatorTap');
+  assert.equal(tap.targetId, '1');
+  assert.equal(tap.effect, 'tomato');
+  assert.equal(tap.x, .25);
+  assert.equal(tap.y, .75);
+});
+
+test('spectator keyboard click uses board center without affecting active-player targeting', () => {
+  const { room, receive, nodes, ws } = browserFixture();
+  room.status = 'playing';
+  room.settings.attack = 'manual';
+  receive();
+  const card = nodes.get('playerMonitors').children[1];
+  card.fire('click', { detail: 0 });
+  assert.equal(ws.sent.at(-1).type, 'target');
+  room.players[0].game.alive = false;
+  receive();
+  card.fire('click', { detail: 0 });
+  assert.equal(ws.sent.at(-1).type, 'spectatorTap');
+  assert.equal(ws.sent.at(-1).x, .5);
+  assert.equal(ws.sent.at(-1).y, .5);
+});
+
+test('multitouch direction continues while rotating and unrelated pointer release cannot stop it', () => {
+  const { room, receive, ws, actions, timers } = browserFixture();
+  room.status = 'playing'; receive();
+  const left = actions.find(button => button.dataset.action === 'left');
+  const rotate = actions.find(button => button.dataset.action === 'rotate');
+  left.fire('pointerdown', { pointerId: 1 });
+  const delay = Math.max(...timers.keys());
+  const callback = timers.get(delay); timers.delete(delay); callback();
+  const repeating = Math.max(...timers.keys());
+  rotate.fire('pointerdown', { pointerId: 2 });
+  rotate.fire('pointerup', { pointerId: 2 });
+  assert.equal(timers.has(repeating), true);
+  timers.get(repeating)();
+  assert.equal(ws.sent.at(-1).action, 'left');
+  left.fire('pointerup', { pointerId: 1 });
+  assert.equal(timers.has(repeating), false);
+  room.players[0].game.alive = false; receive();
+  left.fire('pointerdown', { pointerId: 3 });
+  assert.equal(ws.sent.at(-1).action, 'left');
+  assert.equal(timers.size, 1, 'only overlay update timer remains');
+});
+
+test('gesture tap rotates, horizontal drag moves, downward drag soft drops but never hard drops', () => {
+  const { room, receive, ws, nodes } = browserFixture();
+  room.status = 'playing'; receive();
+  nodes.get('inputModeButton').fire('click');
+  const board = nodes.get('mainBoard');
+  board.fire('pointerdown', { pointerId: 1, pointerType: 'touch', clientX: 120, clientY: 120 });
+  board.fire('pointerup', { pointerId: 1 });
+  assert.equal(ws.sent.at(-1).action, 'rotate');
+  board.fire('pointerdown', { pointerId: 2, pointerType: 'touch', clientX: 120, clientY: 120 });
+  board.fire('pointermove', { pointerId: 2, clientX: 165, clientY: 165 });
+  board.fire('pointerup', { pointerId: 2 });
+  assert.ok(ws.sent.some(message => message.action === 'right'));
+  assert.ok(ws.sent.some(message => message.action === 'down'));
+  assert.ok(ws.sent.every(message => message.action !== 'drop'));
+  board.fire('pointerdown', { pointerId: 3, pointerType: 'touch', clientX: 120, clientY: 120 });
+  room.players[0].game.alive = false; receive();
+  const before = ws.sent.length;
+  board.fire('pointerup', { pointerId: 3 });
+  assert.equal(ws.sent.length, before);
 });
 
 test('client renders team/tied results and non-host read-only settings', () => {

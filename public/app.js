@@ -2,6 +2,15 @@
 
 const $ = id => document.getElementById(id);
 const Rules = window.BlockRules;
+const audio = window.BlockAudio.create();
+function renderSound() {
+  text('soundButton', audio.isEnabled() ? '音效开' : '已静音');
+  $('soundButton').setAttribute('aria-pressed', String(audio.isEnabled()));
+}
+window.addEventListener('pointerdown', () => audio.unlock(), { passive: true });
+window.addEventListener('pointerup', () => audio.unlock(), { passive: true });
+window.addEventListener('touchend', () => audio.unlock(), { passive: true });
+window.addEventListener('keydown', () => audio.unlock());
 let serverOffset = 0;
 function serverNow() { return Date.now() + serverOffset; }
 function isManual() { return state.room && Rules.hostile(state.room.settings) && state.room.settings.attack === 'manual'; }
@@ -110,6 +119,7 @@ function receiveAttack(attack) {
   incomingTimer = setTimeout(() => { show($('incomingToast'), false); show(hitOverlay, false); }, 3500);
 }
 function receiveHit(hit) {
+  audio.play('hit', hit.lines);
   receiveAttack({ phase: 'hit', sourceId: hit.sources[0]?.sourceId,
     sourceName: hit.sources.map(source => `${source.sourceName}（${source.lines}行）`).join('、'), lines: hit.lines });
 }
@@ -117,6 +127,7 @@ const battleEffects = window.BlockEffects.create({
   canvas: $('battleEffects'),
   onIncoming: receiveAttack,
   onHit: receiveHit,
+  onClear: effect => audio.play('clear', effect.rows.length),
   resolve(id) {
     const player = state.room?.players.find(item => item.id === id);
     if (!player) return null;
@@ -126,7 +137,16 @@ const battleEffects = window.BlockEffects.create({
 });
 let reconnectTimer;
 let retryDelay = 1000;
-let heldInput = null;
+const heldInputs = new Map();
+let gesture = null;
+let inputMode = saved('block-relay-input') === 'gesture' ? 'gesture' : 'buttons';
+function renderInputMode() {
+  const enabled = inputMode === 'gesture';
+  document.body.classList.toggle('gesture-mode', enabled);
+  text('inputModeButton', enabled ? '切换按键' : '切换手势');
+  $('inputModeButton').setAttribute('aria-pressed', String(enabled));
+  text('inputModeHint', enabled ? '点按旋转 · 横拖移动 · 下拖软降' : '按住方向连续移动，可同时旋转');
+}
 
 function saved(key, value) {
   try {
@@ -149,6 +169,17 @@ function message(value) {
   if (state.room && state.room.status !== 'lobby') text('eventTicker', value);
 }
 function me() { return state.room?.players.find(player => player.id === state.id); }
+function canSpectatorTap() { return state.connected && state.room?.status === 'playing' && Boolean(me()?.game) && !me().game.alive; }
+let spectatorEffect = 'glass';
+let lastLocalTap = -Infinity;
+function spectatorTap(targetId, x, y) {
+  if (!canSpectatorTap()) return;
+  if (Date.now() - lastLocalTap < 500) { text('spectatorHint', '敲慢一点，半秒后再来。'); return; }
+  if (send({ type: 'spectatorTap', targetId, effect: spectatorEffect, x, y })) {
+    lastLocalTap = Date.now();
+    text('spectatorHint', `已送出${Rules.spectatorEffects[spectatorEffect][0]}，不影响对局。`);
+  }
+}
 function activeGame() { return state.connected && state.room?.status === 'playing' && me()?.game?.alive; }
 function action(value) { if (activeGame()) send({ type: 'action', action: value }); }
 
@@ -178,6 +209,8 @@ function connect() {
       state.room = data.room;
       serverOffset = data.room.serverNow - Date.now();
       render();
+    } else if (data.type === 'tapError') {
+      text('spectatorHint', data.message);
     } else if (data.type === 'error') {
       message(data.message);
     } else if (data.type === 'resumeFailed' || data.type === 'left') {
@@ -215,7 +248,10 @@ function resetRoom() {
   show($('countdownModal'), false);
   battleEffects.clear(true);
   stopRepeat();
+  lastLocalTap = -Infinity;
   state.room = null;
+  document.body.classList.remove('controls-visible');
+  document.body.classList.remove('match-visible');
   state.id = null;
   state.lastEvent = 0;
   monitors.clear();
@@ -238,6 +274,10 @@ function render() {
   const room = state.room;
   const self = me();
   if (!room || !self) return;
+  const controlVisible = ['countdown', 'playing'].includes(room.status) && Boolean(self.game?.alive);
+  document.body.classList.toggle('controls-visible', controlVisible);
+  document.body.classList.toggle('match-visible', room.status !== 'lobby');
+  if (!activeGame()) stopRepeat();
   show($('lobbyView'), false);
   show($('roomView'), true);
   const waiting = room.status === 'lobby';
@@ -275,6 +315,18 @@ function element(tag, className, value) {
 }
 
 function setupSettings() {
+  for (const [id, [name, icon]] of Object.entries(Rules.spectatorEffects)) {
+    const button = element('button', '', `${icon} ${name}`);
+    button.type = 'button';
+    button.dataset.effect = id;
+    button.setAttribute('aria-pressed', String(id === spectatorEffect));
+    button.addEventListener('click', () => {
+      spectatorEffect = id;
+      for (const item of $('spectatorEffectButtons').children) item.setAttribute('aria-pressed', String(item.dataset.effect === id));
+      text('spectatorHint', `已选择${name}，点击仍在场玩家的棋盘。`);
+    });
+    $('spectatorEffectButtons').append(button);
+  }
   $('presetSelect').replaceChildren(...Object.entries(Rules.presets).map(([id, preset]) => {
     const option = element('option', '', preset.name);
     option.value = id;
@@ -457,7 +509,7 @@ function renderGame(self) {
   $('holdPreview').classList.toggle('is-used', game.holdUsed);
   renderReserve(game);
   const targets = validOpponents();
-  const target = targets.find(player => player.id === self.targetId) || (isManual() ? targets[0] : null);
+  const target = targets.find(player => player.id === self.targetId) || (isManual() ? Rules.previousOpponent(room.players, self.id, room.settings) : null);
   text('targetName', room.settings.mode === 'coop' ? '自动救援队友' : !Rules.hostile(room.settings) ? '无攻击' : isManual() ? target?.name || '暂无目标' : Rules.attacks[room.settings.attack][0]);
   text('energyValue', room.settings.cleanse ? `${game.energy} / 12` : '已关闭');
   text('cleanseButton', game.cleanseQueued ? '已预约 · 下次落地' : '净化（V · 6 点）');
@@ -479,6 +531,7 @@ function renderGame(self) {
 
 function renderMonitors(self, target) {
   const room = state.room;
+  show($('spectatorTools'), canSpectatorTap());
   const ids = new Set(room.players.map(player => player.id));
   for (const [id, node] of monitors) {
     if (!ids.has(id)) { node.remove(); monitors.delete(id); }
@@ -497,8 +550,24 @@ function renderMonitors(self, target) {
       detail.append(element('span', 'monitor-state'), element('strong', 'monitor-lines'), element('span', 'monitor-score'), element('span', 'monitor-pending'));
       body.append(canvas, detail);
       node.append(heading, body);
-      node.addEventListener('click', () => {
-        if (activeGame() && isManual() && validOpponents().some(other => other.id === player.id)) send({ type: 'target', id: player.id });
+      let pointer = null;
+      node.addEventListener('pointerdown', event => {
+        if (!canSpectatorTap()) return;
+        pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, time: Date.now(), cancelled: false };
+      });
+      node.addEventListener('pointermove', event => {
+        if (pointer && Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 8) pointer.cancelled = true;
+      });
+      node.addEventListener('pointercancel', () => { if (pointer) pointer.cancelled = true; });
+      node.addEventListener('click', event => {
+        if (canSpectatorTap() && state.room.players.find(other => other.id === player.id)?.game?.alive && player.id !== state.id) {
+          if (event.detail === 0) { spectatorTap(player.id, .5, .5); return; }
+          if (!pointer || pointer.cancelled || Date.now() - pointer.time > 1000) return;
+          const rect = canvas.getBoundingClientRect();
+          if (!rect.width || !rect.height || event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) return;
+          spectatorTap(player.id, (event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
+          pointer = null;
+        } else if (activeGame() && isManual() && validOpponents().some(other => other.id === player.id)) send({ type: 'target', id: player.id });
       });
       monitors.set(player.id, node);
       $('playerMonitors').append(node);
@@ -509,10 +578,12 @@ function renderMonitors(self, target) {
     node.classList.toggle('is-out', !player.game?.alive);
     node.dataset.color = index % 6;
     const teammate = (room.settings.mode === 'coop' || (room.settings.mode === 'teams' && player.team === self.team)) && !own;
-    node.disabled = !activeGame() || !isManual() || own || teammate || !player.game?.alive;
+    const tappable = canSpectatorTap() && !own && player.game?.alive;
+    node.disabled = !tappable && (!activeGame() || !isManual() || own || teammate || !player.game?.alive);
+    node.classList.toggle('is-tappable', Boolean(tappable));
     node.dataset.team = room.settings.mode === 'teams' ? player.team : '';
     node.setAttribute('aria-pressed', String(selected));
-    node.setAttribute('aria-label', own ? `${player.name}，你的棋盘` : teammate ? `${player.name}，队友` : `${player.name}的棋盘${isManual() ? '，点击攻击' : ''}`);
+    node.setAttribute('aria-label', tappable ? `${player.name}的棋盘，点击送出观战效果` : own ? `${player.name}，你的棋盘` : teammate ? `${player.name}，队友` : `${player.name}的棋盘${isManual() ? '，点击攻击' : ''}`);
     node.querySelector('.monitor-name').textContent = player.name;
     node.querySelector('.monitor-badge').textContent = own ? '你' : teammate ? '队友' : room.bountyId === player.id ? '悬赏' : selected ? '目标 ⌖' : '';
     node.querySelector('.monitor-state').textContent = !player.connected ? '离线 · 可重连' : player.game?.alive ? '仍在场上' : `第 ${player.rank || '—'} 名`;
@@ -622,21 +693,29 @@ function renderFinish(self) {
   $('rematchButton').disabled = !host;
 }
 
-function stopRepeat() {
-  if (!heldInput) return;
-  clearTimeout(heldInput.delay);
-  clearInterval(heldInput.repeat);
-  heldInput = null;
+function stopRepeat(source) {
+  if (source === undefined) {
+    for (const key of [...heldInputs.keys()]) stopRepeat(key);
+    gesture = null;
+    return;
+  }
+  const input = heldInputs.get(source);
+  if (!input) return;
+  clearTimeout(input.delay);
+  clearInterval(input.repeat);
+  heldInputs.delete(source);
 }
 function startRepeat(value, source) {
-  stopRepeat();
+  stopRepeat(source);
   action(value);
-  if (!['left', 'right', 'down'].includes(value)) return;
-  const input = { source, delay: null, repeat: null };
-  heldInput = input;
+  if (!activeGame() || !['left', 'right', 'down'].includes(value)) return;
+  // Only one repeating direction at once; action keys do not cancel it.
+  for (const key of [...heldInputs.keys()]) stopRepeat(key);
+  const input = { delay: null, repeat: null };
+  heldInputs.set(source, input);
   input.delay = setTimeout(() => {
-    input.repeat = setInterval(() => action(value), value === 'down' ? 35 : 55);
-  }, 160);
+    input.repeat = setInterval(() => action(value), value === 'down' ? 40 : 60);
+  }, 170);
 }
 function cycleTarget() {
   if (!activeGame() || !isManual()) return;
@@ -658,20 +737,58 @@ window.addEventListener('keydown', event => {
   event.preventDefault();
   if (!event.repeat) startRepeat(value, event.code);
 });
-window.addEventListener('keyup', event => { if (heldInput?.source === event.code) stopRepeat(); });
-window.addEventListener('blur', stopRepeat);
+window.addEventListener('keyup', event => stopRepeat(event.code));
+window.addEventListener('blur', () => stopRepeat());
 document.addEventListener('visibilitychange', () => { if (document.hidden) stopRepeat(); });
 document.querySelectorAll('[data-action]').forEach(button => {
   button.addEventListener('pointerdown', event => {
     event.preventDefault();
     button.setPointerCapture(event.pointerId);
-    startRepeat(button.dataset.action, button);
+    startRepeat(button.dataset.action, `pointer:${event.pointerId}`);
   });
-  button.addEventListener('pointerup', stopRepeat);
-  button.addEventListener('pointercancel', stopRepeat);
-  button.addEventListener('lostpointercapture', stopRepeat);
+  button.addEventListener('pointerup', event => stopRepeat(`pointer:${event.pointerId}`));
+  button.addEventListener('pointercancel', event => stopRepeat(`pointer:${event.pointerId}`));
+  button.addEventListener('lostpointercapture', event => stopRepeat(`pointer:${event.pointerId}`));
   button.addEventListener('click', event => { if (event.detail === 0) action(button.dataset.action); });
 });
+$('inputModeButton').addEventListener('click', () => {
+  stopRepeat();
+  inputMode = inputMode === 'buttons' ? 'gesture' : 'buttons';
+  saved('block-relay-input', inputMode);
+  renderInputMode();
+});
+$('soundButton').addEventListener('click', () => { audio.setEnabled(!audio.isEnabled()); renderSound(); });
+const gestureBoard = $('mainBoard');
+gestureBoard.addEventListener('pointerdown', event => {
+  if (inputMode !== 'gesture' || !activeGame() || event.pointerType === 'mouse' || gesture) return;
+  event.preventDefault();
+  gestureBoard.setPointerCapture(event.pointerId);
+  gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false, started: Date.now() };
+});
+gestureBoard.addEventListener('pointermove', event => {
+  if (!gesture || gesture.id !== event.pointerId || !activeGame()) return;
+  event.preventDefault();
+  const step = Math.max(16, gestureBoard.getBoundingClientRect().width / 10);
+  if (Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) > 8) gesture.moved = true;
+  let count = 0;
+  while (Math.abs(event.clientX - gesture.x) >= step && count++ < 10) {
+    const direction = event.clientX > gesture.x ? 1 : -1;
+    action(direction > 0 ? 'right' : 'left');
+    gesture.x += direction * step;
+  }
+  count = 0;
+  while (event.clientY - gesture.y >= step && count++ < 20) { action('down'); gesture.y += step; }
+  if (event.clientY < gesture.y) gesture.y = event.clientY;
+});
+gestureBoard.addEventListener('pointerup', event => {
+  if (!gesture || gesture.id !== event.pointerId) return;
+  if (!gesture.moved && Date.now() - gesture.started < 350) action('rotate');
+  gesture = null;
+});
+gestureBoard.addEventListener('pointercancel', () => { gesture = null; });
+gestureBoard.addEventListener('lostpointercapture', () => { gesture = null; });
+renderSound();
+renderInputMode();
 $('createButton').addEventListener('click', () => join('create'));
 $('joinButton').addEventListener('click', () => join('join'));
 $('roomInput').addEventListener('input', event => { event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); });

@@ -33,7 +33,8 @@ async function connection(url) {
   return { socket, call(method, params = {}) {
     return new Promise((resolve, reject) => {
       const id = ++sequence;
-      pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 12000);
+      pending.set(id, { resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } });
       socket.send(JSON.stringify({ id, method, params }));
     });
   } };
@@ -53,15 +54,30 @@ async function main() {
     const port = await until(async () => {
       try { return Number((await fs.readFile(path.join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0]); } catch { return null; }
     }, 'Chrome DevTools');
-    async function page() {
-      const info = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
+    async function page(newWindow = false) {
+      let info;
+      if (newWindow) {
+        const version = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+        const browser = await connection(version.webSocketDebuggerUrl);
+        connections.push(browser);
+        const isolated = await browser.call('Target.createBrowserContext');
+        const created = await browser.call('Target.createTarget', { url: 'about:blank', newWindow: true, background: false, browserContextId: isolated.browserContextId });
+        info = await until(async () => (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(target => target.id === created.targetId), 'new window target');
+      } else info = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
       const cdp = await connection(info.webSocketDebuggerUrl);
       connections.push(cdp);
       const errors = [];
+      const audioContexts = [];
       cdp.socket.on('message', raw => {
         const message = JSON.parse(raw);
+        if (message.method === 'WebAudio.contextCreated') audioContexts.push(message.params.context);
+        if (message.method === 'WebAudio.contextChanged') {
+          const context = audioContexts.find(item => item.contextId === message.params.context.contextId);
+          if (context) Object.assign(context, message.params.context);
+        }
         if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails);
       });
+      await cdp.call('WebAudio.enable');
       await cdp.call('Runtime.enable');
       await cdp.call('Page.enable');
       await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
@@ -71,8 +87,8 @@ async function main() {
         if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
         return result.result.value;
       }
-      await until(() => evaluate(`document.querySelector('#createButton')?.disabled === false`), 'page connection');
-      return { cdp, evaluate, errors };
+      await until(() => evaluate(`typeof state !== 'undefined' && state.connected === true && document.querySelector('#createButton')?.disabled === false`), 'page connection');
+      return { cdp, evaluate, errors, audioContexts };
     }
     const a = await page();
     const b = await page();
@@ -120,6 +136,56 @@ async function main() {
     await until(() => room.status === 'playing', 'match start');
     await until(() => a.evaluate(`document.querySelector('#countdownModal').classList.contains('is-hidden')`), 'countdown gone');
     await layoutChecks(a, 'game');
+    // Real touch unlocks audio and checks compact input at portrait/landscape sizes.
+    await a.cdp.call('Page.bringToFront');
+    for (const [width, height] of [[375, 812], [320, 640], [812, 375], [667, 375], [736, 414]]) {
+      await a.cdp.call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: true });
+      await a.cdp.call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+      const layout = await a.evaluate(`(() => {
+        const board=document.querySelector('#mainBoard').getBoundingClientRect(), pad=document.querySelector('#mobileControls').getBoundingClientRect();
+        const buttons=[...document.querySelectorAll('.touch-controls button')].filter(n=>n.getBoundingClientRect().width>0);
+        return {overflow:document.documentElement.scrollWidth>innerWidth,board:board.toJSON(),pad:pad.toJSON(),minHeight:Math.min(...buttons.map(n=>n.getBoundingClientRect().height)),
+          buttonsVisible:buttons.every(n=>{const r=n.getBoundingClientRect();return r.left>=0 && r.top>=0 && r.right<=innerWidth && r.bottom<=innerHeight && n.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));})};
+      })()`);
+      assert.equal(layout.overflow, false, `mobile overflow ${width}x${height}`);
+      const overlaps = layout.board.right > layout.pad.left && layout.board.left < layout.pad.right && layout.board.bottom > layout.pad.top && layout.board.top < layout.pad.bottom;
+      assert.equal(overlaps, false, `controls cover board ${width}x${height}`);
+      assert.ok(layout.minHeight >= 44);
+      assert.equal(layout.buttonsVisible, true, `controls not clickable ${width}x${height}`);
+      if (width === 667 || width === 736) {
+        // An O piece rotates to the same matrix. Use a known non-O piece only
+        // in this isolated fixture, then wait for the real client snapshot.
+        const game = [...room.players.values()][0].game;
+        const matrix = [[0, 1, 0], [1, 1, 1], [0, 0, 0]];
+        game.active = { type: 'T', matrix, x: 3, y: 0 };
+        game.fallTime = 0;
+        game.lockTime = 0;
+        await a.evaluate(`document.querySelector('[data-action="left"]').click()`);
+        await until(() => a.evaluate(`me().game.active.type === 'T' && me().game.active.x === 2 && JSON.stringify(me().game.active.matrix) === ${JSON.stringify(JSON.stringify(matrix))}`), 'non-O rotation fixture synchronized');
+        const point = await a.evaluate(`(() => {const r=document.querySelector('[data-action="rotate"]').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+        const before = await a.evaluate(`JSON.stringify(me().game.active.matrix)`);
+        await a.cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+        await a.cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        await until(() => a.evaluate(`JSON.stringify(me().game.active.matrix) !== ${JSON.stringify(before)}`), `rotation at ${width}x${height}`);
+        const shot = await a.cdp.call('Page.captureScreenshot', { format: 'png' });
+        await fs.writeFile(path.join(__dirname, `../.test-artifacts/landscape-${width}x${height}.png`), Buffer.from(shot.data, 'base64'));
+      }
+    }
+    await a.cdp.call('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: true });
+    const rotatePoint = await a.evaluate(`(() => {const r=document.querySelector('[data-action="rotate"]').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+    await a.cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [rotatePoint] });
+    await a.cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await until(() => a.audioContexts.some(context => context.contextState === 'running'), 'audio unlocked by real touch');
+    await a.evaluate(`document.querySelector('#inputModeButton').click()`);
+    const gesturePoint = await a.evaluate(`(() => {const r=document.querySelector('#mainBoard').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height*.4};})()`);
+    await a.cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [gesturePoint] });
+    await a.cdp.call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: gesturePoint.x + 25, y: gesturePoint.y + 30 }] });
+    await a.cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    const mobilePadShot = await a.cdp.call('Page.captureScreenshot', { format: 'png' });
+    await fs.writeFile(path.join(__dirname, '../.test-artifacts/mobile-controls.png'), Buffer.from(mobilePadShot.data, 'base64'));
+    await a.evaluate(`document.querySelector('#inputModeButton').click()`);
+    await a.cdp.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    console.log('Mobile portrait/small/landscape controls do not cover board, real touch gestures and AudioContext running verified.');
     const [attacker, victim] = [...room.players.values()];
     function attackBoard(game) {
       game.board = Array.from({ length: 20 }, () => Array(10).fill(null));
@@ -127,6 +193,7 @@ async function main() {
       game.active = { type: 'I', matrix: [[1], [1], [1], [1]], x: 4, y: 0 };
     }
     attackBoard(attacker.game);
+    await b.cdp.call('Page.bringToFront');
     await a.evaluate(`document.querySelector('[data-action="drop"]').click()`);
     await until(() => victim.game.pending === 4, 'queued attack');
     await until(() => b.evaluate(`document.querySelector('#incomingToastText').textContent.includes('阿岚')`), 'attacker warning');
@@ -229,6 +296,7 @@ async function main() {
     const { enqueueGarbage } = require('../game');
     enqueueGarbage(victim.game, 4, Date.now());
     attackBoard(attacker.game);
+    await b.cdp.call('Page.bringToFront');
     await a.evaluate(`document.querySelector('[data-action="drop"]').click()`);
     await until(() => attacker.game.helped === 4, 'coop rescue');
     assert.equal(victim.game.pending, 0);
@@ -242,6 +310,77 @@ async function main() {
     assert.deepEqual(a.errors, []);
     assert.deepEqual(b.errors, []);
     console.log('Real mobile lobby: nine presets, one closed customization section, no horizontal overflow. Dig victory and cooperative rescue/victory passed.');
+
+    // Add the third client in a separate browser window so macOS headless does
+    // not suspend the receiver's compositor while driving another target.
+    await a.evaluate(`document.querySelector('#rematchButton').click()`);
+    await until(() => room.status === 'lobby', 'spectator lobby');
+    await until(() => a.evaluate(`!document.querySelector('#waitingPanel').classList.contains('is-hidden')`), 'spectator lobby page rendered');
+    const c = await page(true);
+    await c.evaluate(`document.querySelector('#nameInput').value='观众'; document.querySelector('#roomInput').value='${room.code}'; document.querySelector('#joinButton').click()`);
+    try {
+      await until(() => room.players.size === 3, 'spectator joined');
+    } catch (error) {
+      console.error('Spectator join diagnostics', await c.evaluate(`({name:document.querySelector('#nameInput').value,code:document.querySelector('#roomInput').value,message:document.querySelector('#lobbyMessage').textContent,room:state.room?.code,id:state.id,connected:state.connected})`), { code: room.code, status: room.status, players: room.players.size });
+      throw error;
+    }
+    await a.evaluate(`document.querySelector('#presetSelect').value='friends'; document.querySelector('#presetSelect').dispatchEvent(new Event('change'))`);
+    for (const client of [a, b, c]) {
+      await until(() => client.evaluate(`document.querySelector('#presetSelect').value === 'friends' && document.querySelector('#readyButton').textContent === '我准备好了'`), 'spectator ready UI');
+      await client.evaluate(`document.querySelector('#readyButton').click()`);
+    }
+    await until(() => a.evaluate(`!document.querySelector('#startButton').disabled`), 'spectator match ready');
+    await a.evaluate(`document.querySelector('#startButton').click()`);
+    await until(() => room.status === 'playing', 'spectator match start', 7000);
+    const viewer = [...room.players.values()][2];
+    viewer.game.alive = false;
+    await c.cdp.call('Page.bringToFront');
+    await until(() => c.evaluate(`!document.querySelector('#spectatorTools').classList.contains('is-hidden')`), 'spectator toolbar');
+    await b.cdp.call('Page.bringToFront');
+    await b.cdp.call('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: true });
+    const fxInfo = [];
+    // Desktop sender -> mobile main board. Browser mouse input invokes pointer/click handlers.
+    for (const [index, effect] of ['glass', 'tomato', 'confetti', 'hand', 'firework'].entries()) {
+      await c.evaluate(`document.querySelector('[data-effect="${effect}"]').click()`);
+      const point = await c.evaluate(`(() => {const r=document.querySelector('[data-id="${victim.id}"] canvas').getBoundingClientRect();return {x:r.left+r.width*.3,y:r.top+r.height*.4};})()`);
+      const previous = room.interactionId;
+      await c.cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+      await c.cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+      await until(() => room.interactionId > previous, `real spectator click ${effect}`);
+      const interaction = room.interactions.at(-1);
+      assert.ok(Math.abs(interaction.x - .3) < .02 && Math.abs(interaction.y - .4) < .02);
+      assert.equal(interaction.effect, effect);
+      await sleep(150);
+      const pixels = await b.evaluate(`(() => {
+        const board=document.querySelector('#mainBoard').getBoundingClientRect(), canvas=document.querySelector('#battleEffects'),ctx=canvas.getContext('2d');
+        const x=Math.round(board.left+board.width*.3),y=Math.round(board.top+board.height*.4);
+        const data=ctx.getImageData(x-8,y-8,16,16).data; let painted=0;
+        for(let i=3;i<data.length;i+=4) if(data[i]) painted++;
+        return painted;
+      })()`);
+      if (!pixels) console.log('Spectator pixel diagnostic', await b.evaluate(`({hidden:document.hidden, board:document.querySelector('#mainBoard').getBoundingClientRect().toJSON(), canvas:[document.querySelector('#battleEffects').width,document.querySelector('#battleEffects').height], viewport:[innerWidth,innerHeight], interactions:state.room.interactions, selected:state.id, body:document.body.scrollHeight})`));
+      assert.ok(pixels > 0, `real effect ${effect} has no pixels at mapped point`);
+      fxInfo.push({ effect, pixels });
+      if (index === 1) {
+        const shot = await b.cdp.call('Page.captureScreenshot', { format: 'png' });
+        await fs.writeFile(path.join(__dirname, '../.test-artifacts/spectator-tomato.png'), Buffer.from(shot.data, 'base64'));
+      }
+      await sleep(550);
+    }
+    // Mobile sender -> desktop receiver, using genuine touch input.
+    await c.cdp.call('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: true });
+    await b.cdp.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await c.evaluate(`document.querySelector('[data-id="${victim.id}"]').scrollIntoView({block:'center',inline:'center'})`);
+    const touch = await c.evaluate(`(() => {const r=document.querySelector('[data-id="${victim.id}"] canvas').getBoundingClientRect();return {x:r.left+r.width*.5,y:r.top+r.height*.5};})()`);
+    const previous = room.interactionId;
+    await c.cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: touch.x, y: touch.y }] });
+    await c.cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await until(() => room.interactionId > previous, 'mobile touch spectator tap');
+    assert.ok(Math.abs(room.interactions.at(-1).x - .5) < .03);
+    assert.equal(await c.evaluate(`document.documentElement.scrollWidth > innerWidth`), false);
+    assert.deepEqual(c.errors, []);
+    assert.deepEqual(b.errors, []);
+    console.log('Five real spectator effects mapped desktop-to-mobile:', fxInfo, 'Mobile touch-to-desktop verified.');
   } finally {
     for (const cdp of connections) cdp.socket.close();
     if (chrome && chrome.exitCode === null) {

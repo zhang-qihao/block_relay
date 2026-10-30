@@ -4,11 +4,13 @@
   const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
   const mix = (a, b, t) => a + (b - a) * t;
 
-  function create({ canvas, resolve, onIncoming = () => {}, onHit = () => {} }) {
+  function create({ canvas, resolve, onIncoming = () => {}, onHit = () => {}, onClear = () => {} }) {
     const ctx = canvas.getContext('2d');
     const motion = root.matchMedia('(prefers-reduced-motion: reduce)');
     const shakes = new Set();
     let active = [];
+    let taps = [];
+    let lastTapId = 0;
     let frame = null;
     let key = null;
     let lastId = 0;
@@ -20,10 +22,11 @@
       if (frame !== null) root.cancelAnimationFrame(frame);
       frame = null;
       active = [];
+      taps = [];
       for (const animation of shakes) animation.cancel();
       shakes.clear();
       ctx.clearRect(0, 0, width, height);
-      if (forget) { key = null; lastId = 0; }
+      if (forget) { key = null; lastId = 0; lastTapId = 0; }
     }
     function resize() {
       const ratio = Math.min(root.devicePixelRatio || 1, 2);
@@ -228,23 +231,100 @@
         label(flight.targetId === selfId ? `${source.name} → 你 +${flight.lines}` : `${source.name} → ${target.name} +${flight.lines}`, current.x, current.y - rows.length * 7 - 16, color);
       });
     }
+    function drawTap(tap, now) {
+      const info = resolve(tap.targetId);
+      if (!info?.element) return;
+      const rect = info.element.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const clip = info.clip?.getBoundingClientRect() || rect;
+      const x = rect.left + tap.x * rect.width;
+      const y = rect.top + tap.y * rect.height;
+      const age = now - tap.born;
+      const t = motion.matches ? 0 : clamp(age / 950, 0, 1);
+      const fade = 1 - clamp(age / (motion.matches ? 650 : 1050), 0, 1);
+      const size = clamp(rect.width * .15, 10, 30);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(Math.max(rect.left, clip.left), Math.max(rect.top, clip.top),
+        Math.max(0, Math.min(rect.right, clip.right) - Math.max(rect.left, clip.left)),
+        Math.max(0, Math.min(rect.bottom, clip.bottom) - Math.max(rect.top, clip.top)));
+      ctx.clip();
+      ctx.globalAlpha = fade * .8;
+      ctx.translate(x, y);
+      ctx.lineWidth = 2;
+      if (tap.effect === 'glass') {
+        ctx.strokeStyle = '#a3edfa';
+        for (let ring = 0; ring < 2; ring++) {
+          ctx.beginPath(); ctx.arc(0, 0, size * (.4 + ring * .4 + t), 0, Math.PI * 2); ctx.stroke();
+        }
+        for (let i = 0; i < 5; i++) {
+          const a = i * Math.PI * 2 / 5;
+          ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(a) * size * .45, Math.sin(a) * size * .45);
+          ctx.lineTo(Math.cos(a + .2) * size * .9, Math.sin(a + .2) * size * .9); ctx.stroke();
+        }
+      } else if (tap.effect === 'tomato') {
+        ctx.fillStyle = '#f26870';
+        ctx.beginPath(); ctx.ellipse(0, 0, size * .65, size * .5, -.2, 0, Math.PI * 2); ctx.fill();
+        for (let i = 0; i < 7; i++) {
+          const a = i * Math.PI * 2 / 7;
+          const d = size * (.7 + t * .8);
+          ctx.beginPath(); ctx.arc(Math.cos(a) * d, Math.sin(a) * d, size * .12, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.strokeStyle = '#77d5ad';
+        ctx.beginPath(); ctx.moveTo(-size * .2, -size * .4); ctx.lineTo(0, -size * .65); ctx.lineTo(size * .2, -size * .4); ctx.stroke();
+      } else if (tap.effect === 'hand') {
+        ctx.fillStyle = '#b394ef';
+        ctx.beginPath(); ctx.ellipse(0, size * .15, size * .4, size * .45, 0, 0, Math.PI * 2); ctx.fill();
+        for (let i = 0; i < 4; i++) {
+          ctx.beginPath(); ctx.ellipse((i - 1.5) * size * .24, -size * (.35 + (i === 1 || i === 2 ? .1 : 0)), size * .11, size * .38, 0, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.beginPath(); ctx.ellipse(-size * .48, 0, size * .16, size * .32, -.7, 0, Math.PI * 2); ctx.fill();
+      } else {
+        const colors = ['#53d9e5', '#eed36d', '#ed8198', '#b394ef', '#77d5ad'];
+        for (let i = 0; i < 16; i++) {
+          const a = i * Math.PI * 2 / 16;
+          const d = size * (.4 + t * 1.8) * (i % 2 ? .65 : 1);
+          const px = Math.cos(a) * d;
+          const py = Math.sin(a) * d + (tap.effect === 'confetti' ? t * t * size : 0);
+          ctx.fillStyle = colors[i % colors.length];
+          ctx.strokeStyle = colors[i % colors.length];
+          if (tap.effect === 'confetti') ctx.fillRect(px, py, size * .16, size * .28);
+          else { ctx.beginPath(); ctx.moveTo(px * .7, py * .7); ctx.lineTo(px, py); ctx.stroke(); }
+        }
+      }
+      ctx.restore();
+      // Keep the nickname on the visible board, not inside a clipped particle.
+      if (x >= Math.max(0, clip.left) && x <= Math.min(width, clip.right) && y >= Math.max(0, clip.top) && y <= Math.min(height, clip.bottom)) {
+        label(`${tap.sourceName} · ${root.BlockRules.spectatorEffects[tap.effect][0]}`, x, y - size - 12, '#d8f3f0', fade);
+      }
+    }
     function draw(now) {
       frame = null;
       resize();
       ctx.clearRect(0, 0, width, height);
       active = active.filter(effect => now - effect.born < (motion.matches ? 720 : 1500));
+      taps = taps.filter(tap => now - tap.born < (motion.matches ? 650 : 1050));
+      for (const tap of taps) drawTap(tap, now);
       for (const effect of active) drawEffect(effect, now);
-      if (active.length) frame = root.requestAnimationFrame(draw);
+      if (active.length || taps.length) frame = root.requestAnimationFrame(draw);
     }
     function sync(room, id, now) {
       selfId = id;
       const nextKey = `${room.code}:${room.roundId}`;
       const records = room.effects || [];
+      const interactions = room.interactions || [];
+      const latestTap = interactions.reduce((max, tap) => Math.max(max, tap.id), key === nextKey ? lastTapId : 0);
       const latest = records.reduce((max, record) => Math.max(max, record.id), key === nextKey ? lastId : 0);
-      if (key !== nextKey) { clear(); key = nextKey; lastId = latest; return; }
+      if (key !== nextKey) { clear(); key = nextKey; lastId = latest; lastTapId = latestTap; return; }
       if (!['playing', 'finished'].includes(room.status) || root.document.hidden) {
-        clear(); lastId = latest; return;
+        clear(); lastId = latest; lastTapId = latestTap; return;
       }
+      for (const tap of interactions) {
+        if (room.status === 'playing' && tap.id > lastTapId && now - tap.at >= -250 && now - tap.at < 1500 &&
+            Object.hasOwn(root.BlockRules.spectatorEffects, tap.effect)) taps.push({ ...tap, born: root.performance.now() });
+      }
+      taps = taps.slice(-12);
+      lastTapId = latestTap;
       const fresh = records.filter(record => record.id > lastId && now - record.at >= -250 && now - record.at < 2500);
       lastId = latest;
       for (const record of fresh) {
@@ -264,6 +344,7 @@
             sourceName: record.sourceName || resolve(record.sourceId)?.name || '对手', lines: target.lines });
         }
         if (!record.rows?.length) continue;
+        if (record.sourceId === id) onClear(record);
         const relevant = record.sourceId === id || record.targets.some(target => target.targetId === id);
         const effect = { ...record, born: root.performance.now(), relevant, targets: record.targets.map(target => ({ ...target, hit: false })) };
         // Prefer the local player's feedback during dense six-player exchanges.
@@ -275,7 +356,7 @@
         }
         active.push(effect);
       }
-      if (active.length && frame === null) frame = root.requestAnimationFrame(draw);
+      if ((active.length || taps.length) && frame === null) frame = root.requestAnimationFrame(draw);
     }
     root.document.addEventListener('visibilitychange', () => { if (root.document.hidden) clear(); });
     motion.addEventListener('change', () => clear());

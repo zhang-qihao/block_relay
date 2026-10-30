@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0b1020" />
     <title>方块来袭 · Block Relay</title>
     <link rel="stylesheet" href="/styles.css" />
@@ -45,7 +45,7 @@
         <header class="topbar">
           <div class="brand-lockup"><span class="brand-glyph">▦</span><span>方块来袭<small>Block Relay</small></span></div>
           <div class="room-status"><span class="eyebrow">房间</span><strong id="roomCodeLabel">----</strong><span class="status-divider"></span><span id="playerCountLabel">0 / 6 players</span></div>
-          <button id="leaveButton" class="text-button" type="button">离开房间</button>
+          <div class="topbar-actions"><button id="soundButton" class="text-button" type="button" aria-pressed="true">音效开</button><button id="leaveButton" class="text-button" type="button">离开房间</button></div>
         </header>
 
         <div id="waitingPanel" class="waiting-panel panel-surface">
@@ -103,7 +103,7 @@
               </div>
               <div class="console-block hold-block"><div class="section-caption"><span>暂存方块</span><span id="holdHint">C / SHIFT</span></div><div id="holdPreview" class="piece-preview hold-preview" aria-label="暂存方块"></div></div>
               <div class="console-block attack-block"><div class="section-caption"><span>受击暂存</span><span id="attackValue">空</span></div><p class="reserve-hint">每条横排代表一行障碍</p><div id="attackQueue" class="attack-queue" role="list" aria-label="等待入盘的障碍行"></div><div id="cancelledReserve" class="cancelled-reserve is-hidden"><span class="reserve-caption">刚抵消</span><div id="cancelledRows" class="reserve-cleared" role="list" aria-label="刚刚抵消的障碍行"></div></div></div>
-              <div class="console-block defense-block"><div class="section-caption"><span>净化能量</span><span id="energyValue">0 / 12</span></div><button id="cleanseButton" class="button button-secondary cleanse-button" type="button">净化（V · 6 点）</button><p id="defenseStats" class="rule-description"></p></div>
+              <div class="console-block defense-block"><div class="section-caption"><span>净化能量</span><span id="energyValue">0 / 12</span></div><p id="defenseStats" class="rule-description"></p></div>
               <div class="console-block target-block"><div class="section-caption"><span>当前目标</span><span class="target-glyph">⌁</span></div><div id="targetName" class="target-name">自动选择</div></div>
             </aside>
 
@@ -111,10 +111,10 @@
               <div class="board-frame"><canvas id="mainBoard" class="main-board" aria-label="你的俄罗斯方块棋盘"></canvas><div id="hitOverlay" class="hit-overlay is-hidden" aria-hidden="true"></div><div id="boardOverlay" class="board-overlay is-hidden"><div id="overlayMessage"></div></div></div>
               <div id="incomingNotice" class="incoming-notice is-hidden" role="status" aria-live="polite"></div>
               <div class="board-footer"><div class="control-legend"><span><span class="keycap">← →</span>移动</span><span><span class="keycap">↑</span>旋转</span><span><span class="keycap">SPACE</span>硬降</span></div><div id="dangerLabel" class="danger-label"></div></div>
-              <div class="touch-controls" aria-label="触控操作"><button data-action="left" type="button">←</button><button data-action="rotate" type="button">↻</button><button data-action="right" type="button">→</button><button data-action="down" type="button">↓</button><button data-action="drop" type="button" class="touch-drop">硬降</button><button data-action="hold" type="button">暂存</button></div>
+              <div id="mobileControls" class="mobile-controls"><div class="input-mode-row"><button id="inputModeButton" class="text-button" type="button" aria-pressed="false">切换手势</button><span id="inputModeHint">按住方向连续移动，可同时旋转</span></div><div class="touch-controls" aria-label="触控操作"><button data-action="left" type="button" aria-label="左移">←</button><button data-action="down" type="button" aria-label="软降">↓</button><button data-action="right" type="button" aria-label="右移">→</button><button data-action="rotate" type="button" aria-label="旋转">↻</button><button data-action="hold" type="button">暂存</button><button data-action="drop" type="button" class="touch-drop">硬降</button><button id="cleanseButton" class="cleanse-button" type="button">净化（V · 6 点）</button></div></div>
             </section>
 
-            <aside class="spectator-panel"><div class="spectator-heading"><div><p class="eyebrow">实时棋盘</p><h2>场上玩家</h2></div><span id="spectatorCount" class="spectator-count">0</span></div><div id="playerMonitors" class="player-monitors"></div><div class="spectator-footer"><span class="live-ring"></span><span>实时同步中</span></div></aside>
+            <aside class="spectator-panel"><div class="spectator-heading"><div><p class="eyebrow">实时棋盘</p><h2>场上玩家</h2></div><span id="spectatorCount" class="spectator-count">0</span></div><div id="spectatorTools" class="spectator-tools is-hidden"><div id="spectatorEffectButtons" class="spectator-effect-buttons" role="group" aria-label="观战互动效果"></div><p id="spectatorHint" class="rule-description" role="status">选择效果，点击仍在场玩家的棋盘。不影响对局。</p></div><div id="playerMonitors" class="player-monitors"></div><div class="spectator-footer"><span class="live-ring"></span><span>实时同步中</span></div></aside>
           </div>
         </div>
         <div id="finishOverlay" class="finish-overlay is-hidden"><div class="finish-card panel-surface"><p class="eyebrow">本轮成绩</p><h2 id="finishTitle">这一轮结束了。</h2><div id="rankingList" class="ranking-list"></div><button id="rematchButton" class="button button-primary" type="button">回到大厅</button></div></div>
@@ -134,6 +134,7 @@
     <canvas id="battleEffects" class="battle-effects" aria-hidden="true"></canvas>
     <script src="/rules.js" defer></script>
     <script src="/effects.js" defer></script>
+    <script src="/audio.js" defer></script>
     <script src="/app.js" defer></script>
   </body>
 </html>

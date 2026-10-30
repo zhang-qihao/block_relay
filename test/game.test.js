@@ -147,6 +147,7 @@ test('room capacity, malformed messages and game state validation', async t => {
   const identity = await host.wait(data => data.type === 'joined');
   const initial = await host.wait(isState(room => room.players.length === 1));
   const room = app.rooms.get(initial.room.code);
+  assert.equal(room.settings.attack, 'random');
   host.send({ type: 'action', action: 'drop' });
   host.send({ type: 'ready', ready: true });
   await host.wait(isState(value => value.players[0].ready));
@@ -221,7 +222,7 @@ async function readyAndStart(clients) {
 }
 
 test('WebSocket settings permissions, validation, ready reset and immutable in-game rules', async t => {
-  const { room, clients: [a, b] } = await connectedRoom(t, null, 2);
+  const { room, clients: [a, b] } = await connectedRoom(t, { attack: 'round' }, 2);
   b.send({ type: 'settings', settings: { attack: 'all' } });
   await b.wait(data => data.type === 'error' && data.message.includes('房主'));
   a.send({ type: 'settings', settings: { duration: -1 } });
@@ -239,6 +240,16 @@ test('WebSocket settings permissions, validation, ready reset and immutable in-g
   assert.equal(room.settings.attack, 'random');
   a.send({ type: 'target', id: [...room.players.keys()][1] });
   await a.wait(data => data.type === 'error' && data.message.includes('自动'));
+});
+
+test('manual default targets are synchronized before anyone attacks and refreshed on leaving', async t => {
+  const { room, clients, ids } = await connectedRoom(t, { attack: 'manual' }, 5);
+  const started = await readyAndStart(clients);
+  assert.deepEqual(started.room.players.map(player => player.targetId), [ids[4], ids[0], ids[1], ids[2], ids[3]]);
+  clients[4].send({ type: 'leave' });
+  const changed = await clients[0].wait(isState(value => value.players.length === 4));
+  assert.equal(changed.room.players[0].targetId, ids[3]);
+  assert.equal(room.players.get(ids[0]).targetId, ids[3]);
 });
 
 test('WebSocket manual cooldown cannot be bypassed but dead target can be replaced', async t => {
@@ -270,7 +281,7 @@ test('WebSocket teams: balanced setup, change-team readiness, no friendly fire a
   clients[0].send({ type: 'action', action: 'drop' });
   await clients[0].wait(isState(value => value.players[0].game.lines === 4));
   assert.equal(room.players.get(ids[2]).game.pending, 0);
-  assert.equal(room.players.get(ids[1]).game.pending, 4);
+  assert.equal(room.players.get(ids[3]).game.pending, 4);
   room.players.get(ids[1]).game.alive = false;
   room.players.get(ids[3]).game.alive = false;
   const end = await clients[0].wait(isState(value => value.status === 'finished'));
@@ -591,6 +602,48 @@ test('same-tick sprint target completion awards both players', async t => {
   const end = await clients[0].wait(isState(value => value.status === 'finished'));
   assert.deepEqual(end.room.outcome.winnerIds, ids);
   assert.deepEqual(end.room.outcome.results.map(player => player.rank), [1, 1]);
+});
+
+test('spectator taps validate permissions, coordinates, rate limit and do not change gameplay', async t => {
+  const { room, clients: [a, b, c], ids } = await connectedRoom(t, null, 3);
+  const tap = { type: 'spectatorTap', targetId: ids[1], effect: 'glass', x: .25, y: .75 };
+  a.send(tap);
+  await a.wait(data => data.type === 'tapError');
+  await readyAndStart([a, b, c]);
+  a.send(tap);
+  await a.wait(data => data.type === 'tapError');
+  room.players.get(ids[0]).game.alive = false;
+  await b.wait(isState(value => value.players[0].game && !value.players[0].game.alive));
+  for (const patch of [{ targetId: ids[0] }, { targetId: 'other-room' }, { effect: 'unknown' }, { x: -1 }, { y: 1.1 }, { x: '0.5' }, { x: null }]) {
+    a.send({ ...tap, ...patch });
+    await a.wait(data => data.type === 'tapError');
+  }
+  const before = room.players.get(ids[1]).game;
+  const totals = [before.score, before.lines, before.pending, before.sent];
+  for (const effect of Object.keys(Rules.spectatorEffects)) {
+    room.players.get(ids[0]).lastTapAt = null;
+    a.send({ ...tap, effect, sourceName: 'fake name' });
+    const update = await b.wait(isState(value => value.interactions.some(item => item.effect === effect)));
+    const last = update.room.interactions.at(-1);
+    assert.equal(last.sourceId, ids[0]);
+    assert.equal(last.sourceName, '房主');
+    assert.equal(last.x, .25);
+    assert.equal(last.y, .75);
+  }
+  assert.deepEqual([before.score, before.lines, before.pending, before.sent], totals);
+  a.send(tap);
+  await a.wait(data => data.type === 'tapError' && data.message.includes('慢'));
+  room.players.get(ids[0]).lastTapAt = null;
+  room.tapTimes = Array(8).fill(Date.now());
+  a.send(tap);
+  await a.wait(data => data.type === 'tapError');
+  room.players.get(ids[2]).game.alive = false;
+  await b.wait(isState(value => value.status === 'finished'));
+  a.send(tap);
+  await a.wait(data => data.type === 'tapError');
+  a.send({ type: 'rematch' });
+  const lobby = await a.wait(isState(value => value.status === 'lobby'));
+  assert.deepEqual(lobby.room.interactions, []);
 });
 
 const isState = predicate => data => data.type === 'state' && predicate(data.room);

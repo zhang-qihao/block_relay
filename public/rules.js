@@ -1,7 +1,11 @@
 (function (root) {
   'use strict';
+  const spectatorEffects = {
+    glass: ['敲玻璃', '◎'], tomato: ['番茄', '🍅'], confetti: ['彩纸', '🎉'],
+    hand: ['手印', '✋'], firework: ['烟花', '✦'],
+  };
   const attacks = {
-    manual: ['手动点名', '点击对手棋盘指定目标，目标淘汰后自动切换。'],
+    manual: ['手动点名', '默认攻击房间顺序的前一位，首位选末位；点击棋盘可更换，跳过淘汰者和队友。'],
     random: ['随机攻击', '每次消行随机选择一名对手，整包发送。'],
     lowest: ['累计消行最少', '攻击累计消行最少的对手，并列随机。会让落后者更难翻盘。'],
     leader: ['追击领跑者', '攻击累计消行最多的对手，并列随机。'],
@@ -36,7 +40,7 @@
     counter: true, combo: false, buffer: true, cooldown: false, digBonus: false, cleanse: true,
   });
   const presets = {
-    friends: { name: '好友乱斗', settings: { ...defaults } },
+    friends: { name: '好友乱斗', settings: { ...defaults, attack: 'random' } },
     duel: { name: '点名对决', settings: { ...defaults, attack: 'manual' } },
     timed: { name: '三分钟挑战', settings: { ...defaults, mode: 'timed' } },
     sprint: { name: '消行竞速', settings: { ...defaults, mode: 'sprint' } },
@@ -47,6 +51,17 @@
     practice: { name: '自由练习', settings: { ...defaults, mode: 'practice' } },
   };
   function hostile(settings) { return !['practice', 'dig', 'coop'].includes(settings.mode); }
+  function previousOpponent(players, playerId, settings) {
+    if (!hostile(settings)) return null;
+    const index = players.findIndex(player => player.id === playerId);
+    if (index < 0) return null;
+    const self = players[index];
+    for (let offset = 1; offset < players.length; offset++) {
+      const candidate = players[(index - offset + players.length) % players.length];
+      if (candidate.game?.alive && (settings.mode !== 'teams' || candidate.team !== self.team)) return candidate;
+    }
+    return null;
+  }
   function normalize(settings) {
     const result = { ...settings };
     if (result.mode === 'dig') { result.cleanse = false; result.combo = false; result.counter = false; result.digBonus = false; }
@@ -82,7 +97,7 @@
     }
     return normalize(result);
   }
-  const rules = { attacks, modes, toggles, defaults, presets, hostile, normalize, summary, validate };
+  const rules = { spectatorEffects, attacks, modes, toggles, defaults, presets, hostile, previousOpponent, normalize, summary, validate };
   if (typeof module !== 'undefined' && module.exports) module.exports = rules;
   else root.BlockRules = rules;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

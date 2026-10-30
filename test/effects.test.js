@@ -16,6 +16,7 @@ function fixture(reduced = false) {
   const animations = [];
   const incoming = [];
   const hits = [];
+  const clears = [];
   const ctx = new Proxy({}, {
     get: (target, name) => name === 'measureText' ? value => ({ width: value.length * 10 }) :
       (...args) => calls.push({ name, args, color: target.fillStyle, stroke: target.strokeStyle }),
@@ -38,7 +39,7 @@ function fixture(reduced = false) {
   const document = { hidden: false, addEventListener(name, fn) { listeners[name] = fn; } };
   const motion = { matches: reduced, addEventListener() {} };
   const root = {
-    document, innerWidth: 1100, innerHeight: 800, devicePixelRatio: 1,
+    document, BlockRules: require('../public/rules'), innerWidth: 1100, innerHeight: 800, devicePixelRatio: 1,
     matchMedia: () => motion, performance: { now: () => time },
     requestAnimationFrame(fn) { const id = ++sequence; frames.set(id, fn); return id; },
     cancelAnimationFrame(id) { frames.delete(id); },
@@ -49,6 +50,7 @@ function fixture(reduced = false) {
     canvas: { width: 0, height: 0, getContext: () => ctx },
     onIncoming: attack => incoming.push(attack),
     onHit: hit => hits.push(hit),
+    onClear: clear => clears.push(clear),
     resolve(id) { resolved.push(id); return elements[id] ? { element: elements[id], name: id } : null; },
   });
   function frame(at) {
@@ -63,7 +65,7 @@ function fixture(reduced = false) {
     return { id, sourceId, targets, rows: [row], cancelled: 0, at: 1000 };
   }
   controller.sync(room, 'self', 1000);
-  return { controller, calls, resolved, frames, frame, rects, room, event, document, listeners, animations, incoming, hits };
+  return { controller, calls, resolved, frames, frame, rects, room, event, document, listeners, animations, incoming, hits, clears };
 }
 
 test('effects play outgoing/incoming and third-party attacks using player board anchors', () => {
@@ -199,6 +201,48 @@ test('cooperative rescue uses green feedback without an attack warning', () => {
   assert.equal(f.incoming.length, 0);
   assert.equal(f.hits.length, 0);
   assert.ok(f.calls.some(call => call.name === 'fillText' && /救援 −2 行/.test(call.args[0]) && call.color === '#77d5ad'));
+});
+
+for (const effect of ['glass', 'tomato', 'confetti', 'hand', 'firework']) {
+  test(`spectator ${effect}: normalized board point, nickname, deduplication and idle cleanup`, () => {
+    const f = fixture();
+    f.room.interactions = [{ id: 1, at: 1000, sourceId: 'other', sourceName: '观众', targetId: 'self', effect, x: .25, y: .75 }];
+    f.controller.sync(f.room, 'self', 1000);
+    assert.equal(f.frames.size, 1);
+    f.frame(1100);
+    assert.ok(f.calls.some(call => call.name === 'translate' && call.args[0] === 275 && call.args[1] === 500));
+    assert.ok(f.calls.some(call => call.name === 'fillText' && /观众/.test(call.args[0])));
+    assert.equal(f.incoming.length, 0);
+    assert.equal(f.hits.length, 0);
+    f.frame(2200);
+    assert.equal(f.frames.size, 0);
+    f.controller.sync(f.room, 'self', 1000);
+    assert.equal(f.frames.size, 0);
+  });
+}
+
+test('spectator reduced motion stays static, clipped, and does not evict an attack', () => {
+  const f = fixture(true);
+  f.room.interactions = Array.from({ length: 20 }, (_, i) => ({ id: i + 1, at: 1000, sourceName: '观众', targetId: 'self', effect: 'firework', x: .5, y: .5 }));
+  f.room.effects = [f.event(1, 'other', [{ targetId: 'self', lines: 2 }])];
+  f.controller.sync(f.room, 'self', 1000);
+  f.frame(1100);
+  assert.equal(f.incoming.length, 1);
+  assert.ok(f.calls.filter(call => call.name === 'clip').length <= 12);
+  assert.equal(f.animations.length, 0);
+  const draws = f.calls.filter(call => call.name === 'translate');
+  f.frame(1200);
+  assert.deepEqual(f.calls.filter(call => call.name === 'translate').slice(draws.length).map(call => call.args), draws.map(call => call.args));
+});
+
+test('only local fresh clears emit an audio callback, never duplicate snapshots', () => {
+  const f = fixture();
+  f.room.effects = [f.event(1), f.event(2, 'other')];
+  f.controller.sync(f.room, 'self', 1000);
+  assert.equal(f.clears.length, 1);
+  assert.equal(f.clears[0].sourceId, 'self');
+  f.controller.sync(f.room, 'self', 1000);
+  assert.equal(f.clears.length, 1);
 });
 
 test('stale events, hidden tabs and lobby transitions cannot replay attacks', () => {

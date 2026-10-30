@@ -37,7 +37,10 @@ function routeAttack(room, player, amount, random = Math.random) {
   }
   if (mode === 'manual') {
     target = targets.find(other => other.id === player.targetId);
-    if (!target) { target = targets[0]; player.targetChangedAt = null; }
+    if (!target) {
+      target = Rules.previousOpponent([...room.players.values()], player.id, room.settings);
+      player.targetChangedAt = null;
+    }
   }
   else if (mode === 'lowest') target = extreme(targets, other => other.game.lines, false, random);
   else if (mode === 'leader') target = extreme(targets, other => other.game.lines, true, random);
@@ -83,6 +86,17 @@ function beginMatch(room, seed, now, countdownMs) {
     player.targetId = null;
     player.targetChangedAt = null;
     player.lastAttackOrder = -1;
+  }
+  refreshManualTargets(room);
+}
+function refreshManualTargets(room) {
+  if (room.settings.attack !== 'manual' || !Rules.hostile(room.settings)) return;
+  const players = [...room.players.values()];
+  for (const player of players) {
+    if (!player.game?.alive) continue;
+    if (opponents(room, player).some(other => other.id === player.targetId)) continue;
+    player.targetId = Rules.previousOpponent(players, player.id, room.settings)?.id || null;
+    player.targetChangedAt = null;
   }
 }
 function recordEliminations(room) {
@@ -200,4 +214,4 @@ function advanceMatch(room, now) {
   return notices;
 }
 
-module.exports = { opponents, height, routeAttack, startError, beginMatch, recordEliminations, evaluateMatch, complete, advanceMatch, rotateBounty, rescue };
+module.exports = { opponents, height, routeAttack, startError, beginMatch, recordEliminations, evaluateMatch, complete, advanceMatch, rotateBounty, rescue, refreshManualTargets };

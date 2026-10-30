@@ -38,6 +38,42 @@ for (const mode of Object.keys(Rules.attacks)) {
   });
 }
 
+test('manual defaults form a reverse ring including first-to-last wraparound', () => {
+  const room = fixture({ attack: 'manual' }, 6);
+  const players = [...room.players.values()];
+  assert.deepEqual(players.map(player => player.targetId), ['5', '0', '1', '2', '3', '4']);
+  for (const player of players) {
+    assert.equal(Match.routeAttack(room, player, 2)[0].player.id, player.targetId);
+  }
+});
+
+test('manual fallback skips dead, departed and friendly players without overriding a chosen target', () => {
+  const room = fixture({ attack: 'manual', mode: 'teams' }, 6);
+  const self = room.players.get('0');
+  assert.equal(self.targetId, '5');
+  room.players.get('5').game.alive = false;
+  Match.refreshManualTargets(room);
+  assert.equal(self.targetId, '3');
+  self.targetId = '1';
+  Match.refreshManualTargets(room);
+  assert.equal(self.targetId, '1');
+  room.players.delete('1');
+  Match.refreshManualTargets(room);
+  assert.equal(self.targetId, '3');
+  assert.equal(self.targetChangedAt, null);
+  room.players.get('3').game.alive = false;
+  Match.refreshManualTargets(room);
+  assert.equal(self.targetId, null);
+  assert.deepEqual(Match.routeAttack(room, self, 1), []);
+});
+
+test('manual routing uses reverse order even when stored target is absent', () => {
+  const room = fixture({ attack: 'manual' }, 5);
+  const self = room.players.get('0');
+  self.targetId = null;
+  assert.equal(Match.routeAttack(room, self, 1)[0].player.id, '4');
+});
+
 test('metrics distinguish total cleared lines from physical stack height', () => {
   const room = fixture();
   const [self, a, b, c] = [...room.players.values()];

@@ -159,11 +159,18 @@ select:disabled { opacity: .75; }
 .control-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; color: var(--muted); font-size: 10px; }
 .control-legend .keycap { margin-right: 4px; }
 .danger-label { text-align: center; margin-top: 10px; color: var(--muted); font-size: 10px; line-height: 1.7; }
-.touch-controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; max-width: 318px; margin: 14px auto 0; }
-.touch-controls button { min-height: 44px; border: 1px solid #3b4964; border-radius: 7px; background: #1c2a44; color: var(--text); font: 18px monospace; touch-action: none; user-select: none; }
+.topbar-actions { display: flex; align-items: center; gap: 4px; }
+#soundButton { white-space: nowrap; }
+.mobile-controls { max-width: 420px; margin: 14px auto 0; }
+.input-mode-row { display: none; }
+.touch-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0 auto; }
+.touch-controls button { min-height: 48px; border: 1px solid #3b4964; border-radius: 8px; background: #1c2a44; color: var(--text); font: 18px monospace; touch-action: none; user-select: none; }
 .touch-controls button:active { background: #34536c; border-color: var(--cyan); }
-.touch-controls button:nth-child(n+5) { grid-column: span 2; font: 600 12px "PingFang SC", sans-serif; }
-.touch-controls .touch-drop { color: var(--cyan); }
+.touch-controls [data-action="rotate"] { color: var(--yellow); }
+.touch-controls [data-action="hold"], .touch-controls [data-action="drop"], .touch-controls #cleanseButton { font: 600 12px "PingFang SC", sans-serif; }
+.touch-controls .touch-drop { color: var(--cyan); border-color: #53d9e55c; }
+.touch-controls #cleanseButton { grid-column: span 2; margin: 0; min-width: 0; }
+.gesture-mode.controls-visible #mainBoard { touch-action: none; }
 .incoming-notice { max-width: 318px; max-height: 100px; overflow-y: auto; margin: 12px auto 0; padding: 8px 12px; background: #ed819810; border-left: 3px solid var(--danger); border-radius: 4px; color: #ffb0c2; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
 .spectator-panel { padding: 20px; border: 1px solid var(--line); border-radius: var(--radius); background: #10192c; min-width: 0; }
 .spectator-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
@@ -185,6 +192,11 @@ select:disabled { opacity: .75; }
 .monitor-pending { color: var(--cyan); }
 .monitor-card[data-team="red"] .monitor-name { color: #ed8198; }
 .monitor-card[data-team="blue"] .monitor-name { color: #86b6ff; }
+.spectator-tools { border-bottom: 1px solid var(--line); margin-bottom: 16px; padding-bottom: 16px; }
+.spectator-effect-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.spectator-effect-buttons button { min-height: 38px; padding: 7px 9px; border: 1px solid #3b4964; border-radius: 6px; background: #19243c; font-size: 11px; }
+.spectator-effect-buttons button[aria-pressed="true"] { color: var(--cyan); border-color: var(--cyan); background: #53d9e512; }
+.monitor-card.is-tappable .mini-board { cursor: crosshair; border-color: #53d9e570; }
 .spectator-footer { display: flex; align-items: center; gap: 7px; margin-top: 16px; color: var(--muted); font-size: 10px; }
 .live-ring { width: 6px; height: 6px; border: 1px solid var(--cyan); border-radius: 50%; }
 
@@ -283,8 +295,21 @@ select:disabled { opacity: .75; }
   .control-legend { gap: 7px; font-size: 9px; }
   .control-legend .keycap { font-size: 8px; }
   .danger-label { font-size: 9px; margin-top: 8px; }
-  .touch-controls { gap: 6px; margin-top: 10px; }
-  .touch-controls button { min-height: 44px; }
+  body.controls-visible .app-shell { padding-bottom: calc(200px + env(safe-area-inset-bottom, 0px)); }
+  .mobile-controls { display: none; }
+  .controls-visible .mobile-controls { display: block; position: fixed; z-index: 6; left: 0; right: 0; bottom: 0; max-width: none; margin: 0; padding: 8px 16px calc(10px + env(safe-area-inset-bottom, 0px)); background: #0e172af5; border-top: 1px solid #3b4964; box-shadow: 0 -10px 30px #0004; }
+  .input-mode-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; max-width: 480px; margin: auto auto 6px; }
+  .input-mode-row .text-button { color: var(--cyan); padding: 6px 0; font-size: 11px; }
+  #inputModeHint { color: var(--muted); font-size: 10px; line-height: 1.6; }
+  .touch-controls { gap: 7px; max-width: 480px; margin: auto; }
+  .touch-controls button { min-height: 50px; }
+  .board-frame { max-width: min(100%, calc((100svh - 350px) / 2 + 10px)); min-width: 145px; }
+  .topbar-actions { gap: 0; }
+  .topbar-actions .text-button { padding: 7px 5px; font-size: 10px; }
+  .board-footer .control-legend { display: none; }
+  .gesture-mode .touch-controls [data-action="left"], .gesture-mode .touch-controls [data-action="right"], .gesture-mode .touch-controls [data-action="down"] { display: none; }
+  .gesture-mode .touch-controls [data-action="rotate"] { grid-column: span 2; }
+  .gesture-mode .touch-controls #cleanseButton { grid-column: span 2; }
   .incoming-notice { font-size: 10px; padding: 7px 9px; max-height: 72px; }
   .defense-block .cleanse-button { margin-top: 10px; }
   .target-name { font-size: 11px; }
@@ -306,6 +331,17 @@ select:disabled { opacity: .75; }
   .countdown-guide h2, .finish-card h2 { font-size: 23px; }
   .incoming-toast { top: 10px; padding: 10px 14px; }
   .incoming-toast strong { font-size: 15px; }
+}
+@media (max-height: 520px) and (orientation: landscape) and (pointer: coarse) {
+  .controls-visible .mobile-controls { display: block; position: fixed; z-index: 6; left: auto; right: 12px; bottom: 12px; width: 240px; max-width: 45vw; padding: 10px; background: #0e172af5; border: 1px solid var(--line); border-radius: 10px; }
+  .controls-visible .input-mode-row { display: flex; flex-wrap: wrap; margin-bottom: 8px; }
+  .controls-visible .touch-controls { gap: 6px; }
+  .controls-visible .touch-controls button { min-height: 44px; }
+  .controls-visible .app-shell { padding-right: 270px; }
+  .game-layout { grid-template-columns: minmax(145px, 1fr) 88px; }
+  .spectator-panel { grid-column: 1 / -1; }
+  .board-frame { max-width: 155px; }
+  .toolbar-hint { display: none; }
 }
 @media (max-width: 360px) {
   .app-shell { padding: 0 12px; }
