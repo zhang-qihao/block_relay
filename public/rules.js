@@ -50,6 +50,10 @@
     coop: { name: '合作守城', settings: { ...defaults, mode: 'coop', counter: true } },
     practice: { name: '自由练习', settings: { ...defaults, mode: 'practice' } },
   };
+  function normalizeName(value) {
+    if (typeof value !== 'string') return '';
+    return Array.from(value.replace(/[\x00-\x1f\x7f]/g, '').trim().normalize('NFC')).slice(0, 12).join('').trim();
+  }
   function hostile(settings) { return !['practice', 'dig', 'coop'].includes(settings.mode); }
   function previousOpponent(players, playerId, settings) {
     if (!hostile(settings)) return null;
@@ -97,7 +101,7 @@
     }
     return normalize(result);
   }
-  const rules = { spectatorEffects, attacks, modes, toggles, defaults, presets, hostile, previousOpponent, normalize, summary, validate };
+  const rules = { spectatorEffects, attacks, modes, toggles, defaults, presets, normalizeName, hostile, previousOpponent, normalize, summary, validate };
   if (typeof module !== 'undefined' && module.exports) module.exports = rules;
   else root.BlockRules = rules;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

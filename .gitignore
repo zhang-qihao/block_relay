@@ -4,3 +4,4 @@ node_modules/
 .run/
 logs/
 block-relay.log
+data/

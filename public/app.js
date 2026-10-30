@@ -31,6 +31,150 @@ const SHAPES = {
   Z: [[1, 1, 0], [0, 1, 1]],
 };
 const state = { ws: null, room: null, id: null, connected: false, lastEvent: 0 };
+let publicRooms = [];
+let directoryLoaded = false;
+let leaderboardEntries = [];
+let leaderboardLoaded = false;
+let leaderboardStorage = 'memory';
+function renderLeaderboard() {
+  if (state.room) return;
+  $('refreshLeaderboardButton').disabled = !state.connected;
+  const entries = leaderboardEntries.filter(entry => entry.mode === $('leaderboardModeSelect').value);
+  const podium = entries.slice(0, 3);
+  $('leaderboardPodium').replaceChildren(...Array.from({ length: 3 }, (_, index) => {
+    const entry = podium[index];
+    const place = element('li', `podium-place podium-place-${index + 1}${entry ? '' : ' podium-empty'}`);
+    place.append(element('span', 'podium-rank', `第 ${index + 1} 名`),
+      element('strong', 'podium-name', entry?.name || '等你上榜'),
+      element('span', 'podium-score', entry ? entry.score.toLocaleString() : '—'),
+      element('small', 'podium-mode', entry ? Rules.modes[entry.mode]?.[0] || '游戏纪录' : '尚无纪录'));
+    return place;
+  }));
+  $('leaderboardList').replaceChildren(...entries.slice(3).map((entry, index) => {
+    const row = element('li', 'leaderboard-row');
+    row.append(element('span', 'leaderboard-rank', String(index + 4).padStart(2, '0')),
+      element('span', 'leaderboard-name', entry.name),
+      element('small', 'leaderboard-mode', Rules.modes[entry.mode]?.[0] || '游戏纪录'),
+      element('strong', 'leaderboard-score', entry.score.toLocaleString()));
+    return row;
+  }));
+  text('leaderboardStatus', !state.connected ? '连接中断，重连后更新榜单。' : !leaderboardLoaded ? '正在获取最高分…' :
+    leaderboardStorage === 'error' ? '榜单存储异常，成绩可能尚未保存，请联系房主检查服务日志。' :
+    !entries.length ? '' :
+    leaderboardStorage === 'pending' ? '新纪录正在保存…' : leaderboardStorage === 'memory' ? '当前为临时榜单，重启后不保留。' : '');
+}
+let chatCode = null;
+let chatItems = [];
+let pendingChat = null;
+let chatUnread = 0;
+let chatCollapsed = window.innerWidth <= 1250;
+let chatHeightRoom = null;
+function alignChatHeight() {
+  if (!state.room || state.room.status !== 'lobby' || window.innerWidth <= 1250 || $('customRules').open) return;
+  const height = $('waitingPanel').getBoundingClientRect().height;
+  if (height > 0) $('chatPanel').style.setProperty('--chat-height', `${Math.ceil(height)}px`);
+}
+function closeRoomFinder() {
+  if ($('roomFinder').open) $('roomFinder').close();
+}
+function openRoomFinder() {
+  text('roomFinderError', '');
+  renderDirectory();
+  if (!$('roomFinder').open) $('roomFinder').showModal();
+  $('roomSearchInput').focus();
+  send({ type: 'rooms' });
+}
+function chatControls() {
+  const enabled = state.connected && Boolean(state.room);
+  $('chatInput').disabled = !enabled;
+  $('chatSend').disabled = !enabled || Boolean(pendingChat);
+  if (!state.connected && state.room) text('chatStatus', '连接中断，重连后可继续发送');
+}
+function clearChat() {
+  chatCode = null;
+  chatItems = [];
+  pendingChat = null;
+  chatUnread = 0;
+  $('chatInput').value = '';
+  $('chatMessages').replaceChildren();
+  text('chatUnread', '');
+  show($('chatLatest'), false);
+  chatControls();
+}
+function scrollChatLatest() {
+  $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+  chatUnread = 0;
+  text('chatUnread', '');
+  show($('chatLatest'), false);
+}
+function receiveChat(messages, history = false) {
+  const list = $('chatMessages');
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 36;
+  if (history) { chatItems = []; list.replaceChildren(); }
+  for (const item of messages) {
+    if (chatItems.some(existing => existing.id === item.id)) continue;
+    chatItems.push(item);
+    const row = element('div', `chat-message${item.sourceId === state.id ? ' is-own' : ''}`);
+    const meta = element('div', 'chat-meta');
+    meta.append(element('strong', 'chat-name', item.name + (item.sourceId === state.id ? '（你）' : '')),
+      element('span', 'chat-time', new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })));
+    row.append(meta, element('p', 'chat-text', item.text));
+    list.append(row);
+    if (!history && (chatCollapsed || !atBottom)) chatUnread++;
+    if (pendingChat && item.sourceId === state.id) {
+      if ($('chatInput').value === pendingChat) $('chatInput').value = '';
+      pendingChat = null;
+      text('chatStatus', '记录跟随房间，再开保留');
+    }
+  }
+  while (chatItems.length > 100) { chatItems.shift(); list.children[0]?.remove(); }
+  if (!chatItems.length) list.replaceChildren(element('p', 'chat-empty', '还没有消息，和朋友打个招呼吧。'));
+  else for (const node of [...list.children]) if (node.className === 'chat-empty') node.remove();
+  if (history || (!chatCollapsed && atBottom)) scrollChatLatest();
+  else if (chatUnread) {
+    text('chatUnread', `${chatUnread} 条新消息`);
+    show($('chatLatest'), true);
+  }
+  chatControls();
+}
+function submitChat() {
+  if (!state.connected || !state.room || pendingChat) return;
+  const value = $('chatInput').value;
+  if (!value.trim() || Array.from(value.trim()).length > 200) { text('chatStatus', '请输入 1–200 个字符'); return; }
+  pendingChat = value;
+  if (!send({ type: 'chat', text: value })) pendingChat = null;
+  else text('chatStatus', '正在发送…');
+  chatControls();
+}
+function renderDirectory() {
+  if (state.room) return;
+  const query = $('roomSearchInput').value.trim().toLocaleLowerCase();
+  const rooms = publicRooms.filter(room => `${room.code} ${room.hostName}`.toLocaleLowerCase().includes(query));
+  text('roomDirectoryCount', directoryLoaded ? `${publicRooms.length} 个房间 · 状态实时同步` : '正在获取房间…');
+  $('refreshRoomsButton').disabled = !state.connected;
+  const statusNames = { lobby: '等待中', countdown: '即将开始', playing: '对战中', finished: '已结束' };
+  $('roomDirectoryList').replaceChildren(...rooms.map(room => {
+    const row = element('div', 'directory-row');
+    const info = element('div', 'directory-info');
+    info.append(element('strong', 'directory-code', room.code), element('span', 'directory-host', `房主：${room.hostName}`));
+    const details = element('div', 'directory-details');
+    details.append(element('span', '', Rules.presets[room.presetId]?.name || Rules.modes[room.mode]?.[0] || '自定义'),
+      element('span', '', `${room.players}/${room.maxPlayers} 人 · ${statusNames[room.status] || '未知状态'}${room.online < room.players ? ` · ${room.online} 在线` : ''}`));
+    const button = element('button', 'button button-secondary directory-join',
+      room.status === 'lobby' && room.players >= room.maxPlayers ? '已满员' : !room.online ? '暂时离线' : room.joinable ? '加入' : statusNames[room.status] || '暂不可加入');
+    button.type = 'button';
+    button.disabled = !state.connected || !room.joinable;
+    button.setAttribute('aria-label', `加入 ${room.code}，房主 ${room.hostName}`);
+    button.addEventListener('click', () => {
+      $('roomInput').value = room.code;
+      join('join');
+    });
+    row.append(info, details, button);
+    return row;
+  }));
+  text('roomDirectoryMessage', !state.connected ? '连接中断，重连后自动更新房间。' : !directoryLoaded ? '正在获取房间…' :
+    !publicRooms.length ? '还没有房间，创建一个邀请朋友吧。' : !rooms.length ? '没有匹配的房间，试试房间码或房主昵称。' : '对战中的房间暂不接受中途加入。');
+}
 const monitors = new Map();
 let countdownAnimation = null;
 let countdownKey = null;
@@ -185,6 +329,10 @@ function connect() {
   state.ws = ws;
   ws.addEventListener('open', () => {
     state.connected = true;
+    directoryLoaded = false;
+    leaderboardLoaded = false;
+    renderDirectory();
+    renderLeaderboard();
     retryDelay = 1000;
     text('connectionLabel', '房间服务已连接 · 同一 Wi-Fi 即可开玩');
     document.body.classList.add('is-connected');
@@ -197,7 +345,17 @@ function connect() {
   ws.addEventListener('message', event => {
     let data;
     try { data = JSON.parse(event.data); } catch { return; }
-    if (data.type === 'joined') {
+    if (data.type === 'leaderboardList') {
+      leaderboardEntries = data.entries;
+      leaderboardStorage = data.storage;
+      leaderboardLoaded = true;
+      renderLeaderboard();
+    } else if (data.type === 'roomList') {
+      publicRooms = data.rooms;
+      directoryLoaded = true;
+      renderDirectory();
+    } else if (data.type === 'joined') {
+      closeRoomFinder();
       state.id = data.id;
       saved('block-relay-token', data.token);
       message('');
@@ -206,6 +364,20 @@ function connect() {
       state.room = data.room;
       serverOffset = data.room.serverNow - Date.now();
       render();
+    } else if (data.type === 'chatHistory') {
+      if (state.room?.code === data.code) {
+        chatCode = data.code;
+        pendingChat = null;
+        receiveChat(data.messages, true);
+      }
+    } else if (data.type === 'chatMessage') {
+      if (state.room?.code === data.code) receiveChat([data.message]);
+    } else if (data.type === 'chatError') {
+      if (!data.code || state.room?.code === data.code) {
+        pendingChat = null;
+        text('chatStatus', data.message);
+        chatControls();
+      }
     } else if (data.type === 'spectatorInteraction') {
       if (state.room?.code === data.code && state.room.roundId === data.roundId && state.room.status === 'playing') {
         battleEffects.interact(data.interaction);
@@ -213,6 +385,7 @@ function connect() {
     } else if (data.type === 'tapError') {
       text('spectatorHint', data.message);
     } else if (data.type === 'error') {
+      if ($('roomFinder').open) text('roomFinderError', data.message);
       message(data.message);
     } else if (data.type === 'resumeFailed' || data.type === 'left') {
       saved('block-relay-token', null);
@@ -222,6 +395,10 @@ function connect() {
   });
   ws.addEventListener('close', () => {
     state.connected = false;
+    pendingChat = null;
+    chatControls();
+    renderDirectory();
+    renderLeaderboard();
     resetReserve();
     battleEffects.clear(true);
     stopRepeat();
@@ -250,6 +427,9 @@ function resetRoom() {
   battleEffects.clear(true);
   stopRepeat();
   state.room = null;
+  chatHeightRoom = null;
+  closeRoomFinder();
+  clearChat();
   document.body.classList.remove('controls-visible');
   document.body.classList.remove('match-visible');
   state.id = null;
@@ -259,11 +439,16 @@ function resetRoom() {
   show($('lobbyView'), true);
   show($('roomView'), false);
   show($('finishOverlay'), false);
+  renderDirectory();
+  renderLeaderboard();
+  send({ type: 'rooms' });
+  send({ type: 'leaderboard' });
   message('');
 }
 
 function join(type) {
-  const name = $('nameInput').value.trim() || '方块玩家';
+  const name = Rules.normalizeName($('nameInput').value) || '方块玩家';
+  $('nameInput').value = name;
   saved('block-relay-name', name);
   const code = $('roomInput').value.trim().toUpperCase();
   if (type === 'join' && code.length !== 4) { message('请输入四位房间码。'); return; }
@@ -274,6 +459,13 @@ function render() {
   const room = state.room;
   const self = me();
   if (!room || !self) return;
+  if (chatHeightRoom !== room.code) {
+    chatHeightRoom = room.code;
+    $('customRules').open = false;
+    $('chatPanel').style.removeProperty('--chat-height');
+  }
+  if (chatCode !== room.code) { clearChat(); chatCode = room.code; receiveChat([], true); }
+  chatControls();
   const controlVisible = ['countdown', 'playing'].includes(room.status) && Boolean(self.game?.alive);
   document.body.classList.toggle('controls-visible', controlVisible);
   document.body.classList.toggle('match-visible', room.status !== 'lobby');
@@ -305,6 +497,7 @@ function render() {
   }
   if (room.status === 'finished') renderFinish(self);
   battleEffects.sync(room, state.id, serverNow());
+  alignChatHeight();
 }
 
 function element(tag, className, value) {
@@ -787,8 +980,62 @@ gestureBoard.addEventListener('pointerup', event => {
 });
 gestureBoard.addEventListener('pointercancel', () => { gesture = null; });
 gestureBoard.addEventListener('lostpointercapture', () => { gesture = null; });
+$('chatPanel').classList.toggle('is-collapsed', chatCollapsed);
+$('chatToggle').setAttribute('aria-expanded', String(!chatCollapsed));
+$('chatToggle').addEventListener('click', () => {
+  chatCollapsed = !chatCollapsed;
+  $('chatPanel').classList.toggle('is-collapsed', chatCollapsed);
+  $('chatToggle').setAttribute('aria-expanded', String(!chatCollapsed));
+  if (!chatCollapsed) scrollChatLatest();
+});
+$('chatLatest').addEventListener('click', scrollChatLatest);
+$('chatMessages').addEventListener('scroll', () => {
+  const list = $('chatMessages');
+  if (list.scrollHeight - list.scrollTop - list.clientHeight < 36) {
+    chatUnread = 0; text('chatUnread', ''); show($('chatLatest'), false);
+  }
+});
+$('chatInput').addEventListener('focus', () => stopRepeat());
+$('chatInput').addEventListener('keydown', event => {
+  if (event.key === 'Enter') {
+    if (event.isComposing || event.keyCode === 229) return;
+    event.preventDefault(); submitChat();
+  }
+});
+$('chatForm').addEventListener('submit', event => { event.preventDefault(); submitChat(); });
+chatControls();
 renderSound();
 renderInputMode();
+$('leaderboardModeSelect').replaceChildren(...Object.entries(Rules.modes).map(([value, [name]]) => {
+  const option = element('option', '', name);
+  option.value = value;
+  return option;
+}));
+const savedLeaderboardMode = saved('block-relay-leaderboard-mode');
+$('leaderboardModeSelect').value = Object.hasOwn(Rules.modes, savedLeaderboardMode) ? savedLeaderboardMode : Rules.defaults.mode;
+$('leaderboardModeSelect').addEventListener('change', () => {
+  saved('block-relay-leaderboard-mode', $('leaderboardModeSelect').value);
+  renderLeaderboard();
+});
+$('refreshLeaderboardButton').addEventListener('click', () => {
+  if (send({ type: 'leaderboard' })) text('leaderboardStatus', '正在刷新最高分…');
+});
+$('findRoomsButton').addEventListener('click', openRoomFinder);
+$('closeRoomFinder').addEventListener('click', closeRoomFinder);
+$('roomFinder').addEventListener('keydown', event => {
+  if (event.key === 'Escape') { event.preventDefault(); closeRoomFinder(); }
+});
+$('roomFinder').addEventListener('click', event => {
+  const rect = $('roomFinder').getBoundingClientRect();
+  if (event.target === $('roomFinder') && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) closeRoomFinder();
+});
+$('customRules').addEventListener('toggle', alignChatHeight);
+window.addEventListener('resize', alignChatHeight);
+if (window.ResizeObserver) new ResizeObserver(alignChatHeight).observe($('waitingPanel'));
+$('roomSearchInput').addEventListener('input', renderDirectory);
+$('refreshRoomsButton').addEventListener('click', () => {
+  if (send({ type: 'rooms' })) text('roomDirectoryMessage', '正在刷新房间…');
+});
 $('createButton').addEventListener('click', () => join('create'));
 $('joinButton').addEventListener('click', () => join('join'));
 $('roomInput').addEventListener('input', event => { event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''); });
@@ -810,7 +1057,14 @@ $('teamSelect').addEventListener('change', event => send({ type: 'team', team: e
 $('cleanseButton').addEventListener('click', () => action('cleanse'));
 $('endPracticeButton').addEventListener('click', () => send({ type: 'endPractice' }));
 setupSettings();
-$('nameInput').value = saved('block-relay-name') || '';
+$('nameInput').value = Rules.normalizeName(saved('block-relay-name'));
+function limitNickname(event) {
+  if (event.isComposing) return;
+  $('nameInput').value = Array.from($('nameInput').value).slice(0, 12).join('');
+}
+$('nameInput').addEventListener('input', limitNickname);
+$('nameInput').addEventListener('compositionend', limitNickname);
+$('nameInput').addEventListener('blur', () => { $('nameInput').value = Rules.normalizeName($('nameInput').value); });
 $('createButton').disabled = true;
 $('joinButton').disabled = true;
 fetch('/api/info').then(response => response.json()).then(info => {

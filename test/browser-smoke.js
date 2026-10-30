@@ -9,6 +9,7 @@ const { spawn } = require('node:child_process');
 const { WebSocket } = require('ws');
 const { createApp } = require('../server');
 const { createGame } = require('../game');
+const { createLeaderboard } = require('../leaderboard');
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label, timeout = 10000) {
@@ -43,7 +44,9 @@ async function main() {
   const executable = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
   await fs.access(executable);
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'block-relay-browser-'));
-  const app = createApp({ countdownMs: 5000 });
+  const board = createLeaderboard();
+  for (const [index, name] of ['方块冠军', '消行高手', '挖掘达人', '新朋友'].entries()) board.record(name, 8000 - index * 1500, 'survival', index);
+  const app = createApp({ countdownMs: 5000, leaderboard: board });
   let chrome;
   const connections = [];
   try {
@@ -127,12 +130,98 @@ async function main() {
       await page.cdp.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     }
     await layoutChecks(a, 'entry');
+    await until(() => a.evaluate(`document.querySelectorAll('#leaderboardPodium .podium-place').length===3 && document.querySelector('#leaderboardPodium').textContent.includes('方块冠军')`), 'leaderboard rendered');
+    const podium = await a.evaluate(`(() => {
+      const first=document.querySelector('.podium-place-1').getBoundingClientRect(),second=document.querySelector('.podium-place-2').getBoundingClientRect(),third=document.querySelector('.podium-place-3').getBoundingClientRect();
+      return {order:second.left<first.left && first.left<third.left,raised:first.top<second.top && first.top<third.top};
+    })()`);
+    assert.equal(podium.order, true);
+    assert.equal(podium.raised, true);
+    assert.equal(await a.evaluate(`document.querySelector('link[rel="icon"]').getAttribute('href')`), '/favicon.png');
+    const favicon = await fetch(`${origin}/favicon.png`);
+    assert.equal(favicon.status, 200);
+    assert.match(favicon.headers.get('content-type'), /image\/png/);
+    assert.equal(Buffer.from(await favicon.arrayBuffer()).subarray(1, 4).toString(), 'PNG');
+    for (const [width, height] of [[1600, 900], [1000, 1000], [390, 844], [320, 640]]) {
+      await a.cdp.call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width <= 390 });
+      const home = await a.evaluate(`(() => {
+        const rect = selector => document.querySelector(selector).getBoundingClientRect().toJSON();
+        return {intro: rect('.lobby-copy'), ranking: rect('.leaderboard-panel'), room: rect('.lobby-panel'),
+          overflow: document.documentElement.scrollWidth > innerWidth,
+          image: document.querySelector('.home-mascot').naturalWidth};
+      })()`);
+      assert.equal(home.overflow, false, `home overflow at ${width}`);
+      assert.ok(home.image > 0, 'mascot loaded');
+      assert.ok(home.intro.bottom < home.ranking.top, 'introduction precedes ranking');
+      if (width > 760) {
+        assert.ok(Math.abs(home.intro.height - home.ranking.height) < 1, 'equal left panels');
+        assert.ok(Math.abs(home.intro.width - home.room.width) < 1, 'equal columns');
+        assert.ok(Math.abs(home.intro.top - home.room.top) < 1, 'room spans from introduction');
+        assert.ok(Math.abs(home.ranking.bottom - home.room.bottom) < 1, 'room spans through ranking');
+        assert.ok(home.intro.right < home.room.left, 'room is on right');
+      } else {
+        assert.ok(home.ranking.bottom < home.room.top, 'mobile order: introduction, ranking, room');
+      }
+    }
+    for (const width of [1440, 375]) {
+      await a.cdp.call('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: width < 768 });
+      await a.evaluate(`document.querySelector('.leaderboard-panel').scrollIntoView({block:'center'})`);
+      const shot = await a.cdp.call('Page.captureScreenshot', { format: 'png' });
+      await fs.writeFile(path.join(__dirname, `../.test-artifacts/leaderboard-${width}.png`), Buffer.from(shot.data, 'base64'));
+    }
+    await a.cdp.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await a.evaluate(`window.scrollTo(0,0)`);
     await a.evaluate(`document.querySelector('#nameInput').value='阿岚'; document.querySelector('#createButton').click()`);
     const room = await until(() => [...app.rooms.values()][0], 'created room');
-    await b.evaluate(`document.querySelector('#nameInput').value='小周'; document.querySelector('#roomInput').value='${room.code}'; document.querySelector('#joinButton').click()`);
+    await until(() => b.evaluate(`document.querySelectorAll('.directory-row').length === 1`), 'public directory updates after create');
+    await b.evaluate(`document.querySelector('#nameInput').value='小周'; document.querySelector('#findRoomsButton').click(); document.querySelector('#roomSearchInput').value='阿岚'; document.querySelector('#roomSearchInput').dispatchEvent(new Event('input'))`);
+    assert.equal(await b.evaluate(`document.querySelector('#roomFinder').open`), true);
+    await b.cdp.call('Page.bringToFront');
+    await b.cdp.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await b.cdp.call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until(() => b.evaluate(`!document.querySelector('#roomFinder').open`), 'Escape closes native finder');
+    await b.evaluate(`document.querySelector('#findRoomsButton').click()`);
+    assert.equal(await b.evaluate(`document.querySelectorAll('.directory-row').length`), 1);
+    for (const width of [375, 320]) {
+      await b.cdp.call('Emulation.setDeviceMetricsOverride', { width, height: 812, deviceScaleFactor: 1, mobile: true });
+      assert.equal(await b.evaluate(`document.querySelector('#roomFinder').getBoundingClientRect().width <= innerWidth && document.querySelector('#roomFinder').getBoundingClientRect().height <= innerHeight`), true);
+      assert.equal(await b.evaluate(`document.documentElement.scrollWidth > innerWidth`), false);
+      if (width === 375) {
+        const shot = await b.cdp.call('Page.captureScreenshot', { format: 'png' });
+        await fs.writeFile(path.join(__dirname, '../.test-artifacts/room-directory-mobile.png'), Buffer.from(shot.data, 'base64'));
+      }
+    }
+    await b.evaluate(`document.querySelector('#roomSearchInput').value='none'; document.querySelector('#roomSearchInput').dispatchEvent(new Event('input'))`);
+    assert.equal(await b.evaluate(`document.querySelectorAll('.directory-row').length`), 0);
+    await b.evaluate(`document.querySelector('#roomSearchInput').value='${room.code.toLowerCase()}'; document.querySelector('#roomSearchInput').dispatchEvent(new Event('input')); document.querySelector('.directory-join').click()`);
+    await b.cdp.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await b.evaluate(`window.scrollTo(0,0)`);
     await until(() => room.players.size === 2, 'joined player');
+    await until(() => b.evaluate(`!document.querySelector('#roomFinder').open`), 'successful join closes finder');
     await until(() => a.evaluate(`!document.querySelector('#waitingPanel').classList.contains('is-hidden')`), 'lobby rendered');
     await layoutChecks(a, 'lobby');
+    await a.cdp.call('Page.bringToFront');
+    await a.evaluate(`document.querySelector('#chatInput').focus()`);
+    await a.cdp.call('Input.insertText', { text: '<img src=x onerror=alert(1)> 这局一起玩' });
+    await a.cdp.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await a.cdp.call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await until(() => b.evaluate(`document.querySelector('#chatMessages').textContent.includes('这局一起玩')`), 'real room chat delivery');
+    assert.equal(await b.evaluate(`document.querySelectorAll('#chatMessages img').length`), 0);
+    const chatLayout = await a.evaluate(`({chat:document.querySelector('#chatPanel').getBoundingClientRect().toJSON(),main:document.querySelector('.room-main').getBoundingClientRect().toJSON()})`);
+    assert.ok(chatLayout.chat.right < chatLayout.main.left, 'desktop chat must be left of lobby');
+    const alignment = await a.evaluate(`({chat:document.querySelector('#chatPanel').getBoundingClientRect().top,lobby:document.querySelector('#waitingPanel').getBoundingClientRect().top})`);
+    assert.ok(Math.abs(alignment.chat - alignment.lobby) <= 1, 'desktop chat and lobby align at the top');
+    const collapsedHeight = await a.evaluate(`document.querySelector('#waitingPanel').getBoundingClientRect().height`);
+    await until(() => a.evaluate(`Math.abs(document.querySelector('#chatPanel').getBoundingClientRect().height - document.querySelector('#waitingPanel').getBoundingClientRect().height) <= 2`), 'chat matches default lobby height');
+    await a.evaluate(`document.querySelector('#customRules').open=true`);
+    await sleep(150);
+    assert.ok(await a.evaluate(`document.querySelector('#waitingPanel').getBoundingClientRect().height > ${collapsedHeight} + 100`));
+    assert.ok(await a.evaluate(`Math.abs(document.querySelector('#chatPanel').getBoundingClientRect().height - ${collapsedHeight}) <= 2`), 'chat does not grow with rules');
+    await a.evaluate(`document.querySelector('#customRules').open=false`);
+    await sleep(80);
+    const chatShot = await a.cdp.call('Page.captureScreenshot', { format: 'png' });
+    await fs.writeFile(path.join(__dirname, '../.test-artifacts/room-chat-desktop.png'), Buffer.from(chatShot.data, 'base64'));
+    await a.evaluate(`document.querySelector('#chatInput').blur()`);
     await b.evaluate(`document.querySelector('#readyButton').click()`);
     await until(() => a.evaluate(`document.querySelector('#startButton').disabled === false`), 'all ready');
     await a.evaluate(`document.querySelector('#startButton').click()`);
@@ -271,6 +360,12 @@ async function main() {
     assert.equal(lobby.details, 1);
     assert.equal(lobby.presets, 10);
     assert.equal(lobby.overflow, false);
+    assert.equal(await a.evaluate(`document.querySelector('#chatMessages').textContent.includes('这局一起玩')`), true, 'chat survives rematch');
+    await a.evaluate(`if(document.querySelector('#chatPanel').classList.contains('is-collapsed')) document.querySelector('#chatToggle').click(); document.querySelector('#chatPanel').scrollIntoView({block:'center'})`);
+    assert.equal(await a.evaluate(`document.documentElement.scrollWidth > innerWidth`), false);
+    const mobileChat = await a.cdp.call('Page.captureScreenshot', { format: 'png' });
+    await fs.writeFile(path.join(__dirname, '../.test-artifacts/room-chat-mobile.png'), Buffer.from(mobileChat.data, 'base64'));
+    await a.evaluate(`document.querySelector('#chatToggle').click(); window.scrollTo(0,0)`);
     const lobbyShot = await a.cdp.call('Page.captureScreenshot', { format: 'png' });
     await fs.writeFile(path.join(__dirname, '../.test-artifacts/mobile-lobby.png'), Buffer.from(lobbyShot.data, 'base64'));
     await a.evaluate(`document.querySelector('#presetSelect').value='dig'; document.querySelector('#presetSelect').dispatchEvent(new Event('change'))`);
@@ -344,6 +439,8 @@ async function main() {
     viewer.game.alive = false;
     await c.cdp.call('Page.bringToFront');
     await until(() => c.evaluate(`!document.querySelector('#spectatorTools').classList.contains('is-hidden')`), 'spectator toolbar');
+    await c.evaluate(`document.querySelector('#chatInput').value='观众也能聊天'; document.querySelector('#chatForm').requestSubmit()`);
+    await until(() => b.evaluate(`document.querySelector('#chatMessages').textContent.includes('观众也能聊天')`), 'eliminated spectator chat');
     await b.cdp.call('Page.bringToFront');
     await b.cdp.call('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: true });
     const fxInfo = [];
@@ -405,7 +502,7 @@ async function main() {
       await exited;
     }
     await app.close();
-    await fs.rm(profile, { recursive: true, force: true });
+    await fs.rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 });
   }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

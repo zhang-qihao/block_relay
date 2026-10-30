@@ -10,7 +10,7 @@ const path = require('node:path');
 const Rules = require('../public/rules');
 const { createGame, snapshotGame } = require('../game');
 
-function browserFixture() {
+function browserFixture(width = 1200) {
   const drawing = new Proxy({}, { get: (target, name) => target[name] || (() => {}), set: (target, name, value) => { target[name] = value; return true; } });
   const nodes = new Map();
   const all = [];
@@ -19,6 +19,8 @@ function browserFixture() {
       this.tagName = tag.toUpperCase(); this.type = ''; this.dataset = {}; this.children = [];
       this.textContent = ''; this.value = ''; this.checked = false; this.disabled = false;
       this.events = {}; this.className = ''; this.attributes = {}; this.animations = [];
+      this.style = { values: {}, setProperty(name, value) { this.values[name] = value; }, removeProperty(name) { delete this.values[name]; } };
+      this.open = false;
       this.classes = new Set();
       this.classList = {
         toggle: (name, value) => value ? this.classes.add(name) : this.classes.delete(name),
@@ -33,6 +35,9 @@ function browserFixture() {
     setAttribute(name, value) { this.attributes[name] = value; }
     getContext() { return drawing; }
     getBoundingClientRect() { return { left: 100, top: 100, right: 200, bottom: 300, width: 100, height: 200 }; }
+    focus() { this.focused = true; }
+    showModal() { this.open = true; }
+    close() { this.open = false; }
     setPointerCapture() {}
     animate(keyframes, options) {
       const animation = { keyframes, options, cancelled: false, cancel() { this.cancelled = true; }, finished: new Promise(() => {}) };
@@ -85,7 +90,7 @@ function browserFixture() {
     setInterval(fn) { const id = ++timerId; timerCallbacks.set(id, fn); return id; },
     setTimeout(fn) { const id = ++timerId; timerCallbacks.set(id, fn); return id; },
     clearTimeout(id) { timerCallbacks.delete(id); }, clearInterval(id) { timerCallbacks.delete(id); }, Date, console,
-    addEventListener(name, fn) { (windowEvents[name] ||= []).push(fn); }, devicePixelRatio: 1, innerWidth: 1200, innerHeight: 900,
+    addEventListener(name, fn) { (windowEvents[name] ||= []).push(fn); }, devicePixelRatio: 1, innerWidth: width, innerHeight: 900,
     matchMedia: () => ({ matches: false, addEventListener() {} }),
     requestAnimationFrame() { return 1; }, cancelAnimationFrame() {}, performance: { now: () => 1000 },
   });
@@ -413,6 +418,185 @@ test('spectator rapid clicks are sent individually without a local cooldown', ()
   }
   assert.equal(ws.sent.length - before, 30);
   assert.ok(ws.sent.slice(before).every(message => message.type === 'spectatorTap'));
+});
+
+test('public directory filters code/host safely, joins with nickname and disables unavailable rooms', () => {
+  const { nodes, ws } = browserFixture();
+  const rooms = [
+    { code: 'ABCD', hostName: '<img onerror=bad>', mode: 'survival', presetId: 'friends', players: 2, online: 2, maxPlayers: 6, status: 'lobby', joinable: true },
+    { code: 'EFGH', hostName: '小周', mode: 'coop', presetId: 'coop', players: 3, online: 3, maxPlayers: 6, status: 'playing', joinable: false },
+  ];
+  ws.receive({ type: 'roomList', rooms });
+  assert.equal(nodes.get('roomDirectoryList').children.length, 2);
+  assert.equal(nodes.get('roomDirectoryList').children[0].children[0].children[1].textContent, '房主：<img onerror=bad>');
+  nodes.get('roomSearchInput').value = 'abcd';
+  nodes.get('roomSearchInput').fire('input');
+  assert.equal(nodes.get('roomDirectoryList').children.length, 1);
+  nodes.get('nameInput').value = '测试玩家';
+  nodes.get('roomDirectoryList').children[0].children[2].fire('click');
+  assert.equal(ws.sent.at(-1).type, 'join');
+  assert.equal(ws.sent.at(-1).code, 'ABCD');
+  assert.equal(ws.sent.at(-1).name, '测试玩家');
+  nodes.get('roomSearchInput').value = '小周'; nodes.get('roomSearchInput').fire('input');
+  assert.equal(nodes.get('roomDirectoryList').children[0].children[2].disabled, true);
+  nodes.get('roomSearchInput').value = '没有'; nodes.get('roomSearchInput').fire('input');
+  assert.equal(nodes.get('roomDirectoryList').children.length, 0);
+  assert.match(nodes.get('roomDirectoryMessage').textContent, /没有匹配/);
+  nodes.get('roomSearchInput').value = ''; nodes.get('roomSearchInput').fire('input');
+  ws.fire('close');
+  assert.ok(nodes.get('roomDirectoryList').children.every(row => row.children[2].disabled));
+  assert.match(nodes.get('roomDirectoryMessage').textContent, /连接中断/);
+});
+
+test('chat is text-only, deduplicated, preserves draft on errors and clears on leave', () => {
+  const { room, receive, nodes, ws } = browserFixture();
+  receive();
+  ws.receive({ type: 'chatHistory', code: room.code, messages: [] });
+  nodes.get('chatInput').value = '你好';
+  nodes.get('chatInput').fire('keydown', { key: 'Enter', isComposing: true });
+  assert.notEqual(ws.sent.at(-1)?.type, 'chat');
+  nodes.get('chatInput').fire('keydown', { key: 'Enter', isComposing: false });
+  assert.equal(ws.sent.at(-1).text, '你好');
+  const message = { id: 1, at: Date.now(), name: '<img>', sourceId: '0', text: '<script>你好</script>' };
+  ws.receive({ type: 'chatMessage', code: room.code, message });
+  assert.equal(nodes.get('chatMessages').children[0].children[1].textContent, message.text);
+  ws.receive({ type: 'chatMessage', code: room.code, message });
+  assert.equal(nodes.get('chatMessages').children.length, 1);
+  ws.receive({ type: 'chatMessage', code: 'OTHER', message: { ...message, id: 2 } });
+  assert.equal(nodes.get('chatMessages').children.length, 1);
+  nodes.get('chatInput').value = '保留草稿';
+  nodes.get('chatForm').fire('submit');
+  ws.receive({ type: 'chatError', code: room.code, message: '发送太快' });
+  assert.equal(nodes.get('chatInput').value, '保留草稿');
+  assert.match(nodes.get('chatStatus').textContent, /太快/);
+  ws.fire('close');
+  assert.equal(nodes.get('chatSend').disabled, true);
+  ws.receive({ type: 'left' });
+  assert.equal(nodes.get('chatMessages').children.length, 0);
+  assert.equal(nodes.get('chatInput').value, '');
+});
+
+test('chat limit error releases pending send and preserves draft for retry', () => {
+  const { room, receive, nodes, ws } = browserFixture();
+  receive();
+  nodes.get('chatInput').value = '限流后重试';
+  nodes.get('chatForm').fire('submit');
+  assert.equal(nodes.get('chatSend').disabled, true);
+  assert.equal(nodes.get('chatStatus').textContent, '正在发送…');
+  ws.receive({ type: 'chatError', code: room.code, message: '发送太快，请稍后再试。' });
+  assert.equal(nodes.get('chatInput').value, '限流后重试');
+  assert.equal(nodes.get('chatSend').disabled, false);
+  const before = ws.sent.length;
+  nodes.get('chatForm').fire('submit');
+  assert.equal(ws.sent.length, before + 1);
+  assert.equal(ws.sent.at(-1).text, '限流后重试');
+  ws.receive({ type: 'chatMessage', code: room.code, message: { id: 1, at: Date.now(), sourceId: '0', name: '玩家0', text: '限流后重试' } });
+  assert.equal(nodes.get('chatInput').value, '');
+  assert.equal(nodes.get('chatSend').disabled, false);
+});
+
+test('focusing chat cancels directional repeat and new messages do not force scroll while reading', () => {
+  const { room, receive, nodes, actions, timers, ws } = browserFixture();
+  room.status = 'playing'; receive();
+  actions.find(button => button.dataset.action === 'left').fire('pointerdown', { pointerId: 1 });
+  const delay = Math.max(...timers.keys());
+  nodes.get('chatInput').fire('focus');
+  assert.equal(timers.has(delay), false);
+  const list = nodes.get('chatMessages');
+  list.scrollHeight = 1000; list.clientHeight = 200; list.scrollTop = 100;
+  ws.receive({ type: 'chatMessage', code: room.code, message: { id: 1, at: Date.now(), name: '朋友', sourceId: '1', text: '新消息' } });
+  assert.equal(list.scrollTop, 100);
+  assert.match(nodes.get('chatUnread').textContent, /新消息/);
+  nodes.get('chatLatest').fire('click');
+  assert.equal(list.scrollTop, 1000);
+});
+
+test('nickname input limits twelve characters, respects composition and trims on blur and join', () => {
+  const { nodes, ws } = browserFixture();
+  const input = nodes.get('nameInput');
+  input.value = '一二三四五六七八九十十一十二';
+  input.fire('input', { isComposing: true });
+  assert.equal(input.value, '一二三四五六七八九十十一十二');
+  input.fire('compositionend');
+  assert.equal(Array.from(input.value).length, 12);
+  input.value = '😀'.repeat(13);
+  input.fire('input');
+  assert.equal(input.value, '😀'.repeat(12));
+  input.value = '  小 方块  ';
+  input.fire('blur');
+  assert.equal(input.value, '小 方块');
+  input.value = '  玩家  ';
+  nodes.get('createButton').fire('click');
+  assert.equal(ws.sent.at(-1).name, '玩家');
+  assert.equal(input.value, '玩家');
+  input.value = '长'.repeat(14);
+  nodes.get('roomInput').value = 'ABCD';
+  nodes.get('joinButton').fire('click');
+  assert.equal(ws.sent.at(-1).name, '长'.repeat(12));
+});
+
+test('leaderboard displays fixed top-three places, escaped names and remaining ranks', () => {
+  const { nodes, ws } = browserFixture();
+  const entries = Array.from({ length: 5 }, (_, i) => ({ name: i === 0 ? '<img>' : `玩家${i}`, score: 1000 - i, mode: 'survival', rank: i + 1, at: i }));
+  ws.receive({ type: 'leaderboardList', entries, storage: 'saved', available: true });
+  const podium = nodes.get('leaderboardPodium');
+  assert.equal(podium.children.length, 3);
+  assert.equal(podium.children[0].children[1].textContent, '<img>');
+  assert.equal(nodes.get('leaderboardList').children.length, 2);
+  assert.equal(nodes.get('leaderboardStatus').textContent, '');
+  assert.equal(nodes.get('leaderboardList').children[0].children[0].textContent, '04');
+  ws.receive({ type: 'leaderboardList', entries: entries.slice(0, 1), storage: 'saved', available: true });
+  assert.equal(podium.children[1].children[1].textContent, '等你上榜');
+  ws.receive({ type: 'leaderboardList', entries: [], storage: 'error', available: false });
+  assert.match(nodes.get('leaderboardStatus').textContent, /异常/);
+});
+
+test('leaderboard mode selector shows independent podiums, empty modes and live updates', () => {
+  const { nodes, ws } = browserFixture();
+  const select = nodes.get('leaderboardModeSelect');
+  assert.equal(select.children.length, Object.keys(Rules.modes).length);
+  assert.equal(select.value, 'survival');
+  const entries = Object.keys(Rules.modes).filter(mode => mode !== 'coop').flatMap(mode =>
+    Array.from({ length: 4 }, (_, i) => ({ name: `${mode}${i}`, mode, score: 100 - i, at: i, rank: i + 1 })));
+  ws.receive({ type: 'leaderboardList', entries, storage: 'saved', available: true });
+  for (const mode of Object.keys(Rules.modes).filter(mode => mode !== 'coop')) {
+    select.value = mode;
+    select.fire('change');
+    assert.deepEqual(nodes.get('leaderboardPodium').children.map(node => node.children[1].textContent), [0, 1, 2].map(i => `${mode}${i}`));
+    assert.equal(nodes.get('leaderboardList').children[0].children[1].textContent, `${mode}3`);
+  }
+  select.value = 'coop'; select.fire('change');
+  assert.ok(nodes.get('leaderboardPodium').children.every(node => node.children[1].textContent === '等你上榜'));
+  assert.equal(nodes.get('leaderboardList').children.length, 0);
+  assert.equal(nodes.get('leaderboardStatus').textContent, '');
+  ws.receive({ type: 'leaderboardList', entries: [...entries, { name: '守城冠军', mode: 'coop', score: 10, at: 1, rank: 1 }], storage: 'saved', available: true });
+  assert.equal(select.value, 'coop');
+  assert.equal(nodes.get('leaderboardPodium').children[0].children[1].textContent, '守城冠军');
+  nodes.get('refreshLeaderboardButton').fire('click');
+  assert.equal(ws.sent.at(-1).type, 'leaderboard');
+  assert.equal(select.value, 'coop');
+});
+
+test('finder opens from the join row, preserves errors and closes after joining', () => {
+  const { nodes, ws, receive } = browserFixture(1440);
+  nodes.get('findRoomsButton').fire('click');
+  assert.equal(nodes.get('roomFinder').open, true);
+  assert.equal(nodes.get('roomSearchInput').focused, true);
+  assert.equal(ws.sent.at(-1).type, 'rooms');
+  ws.receive({ type: 'error', message: '房间已经开始' });
+  assert.equal(nodes.get('roomFinder').open, true);
+  assert.equal(nodes.get('roomFinderError').textContent, '房间已经开始');
+  ws.receive({ type: 'joined', id: '0', token: 'test' });
+  assert.equal(nodes.get('roomFinder').open, false);
+  receive();
+  assert.equal(nodes.get('chatPanel').style.values['--chat-height'], '200px');
+  nodes.get('customRules').open = true;
+  nodes.get('waitingPanel').getBoundingClientRect = () => ({ height: 1200 });
+  receive();
+  assert.equal(nodes.get('chatPanel').style.values['--chat-height'], '200px');
+  nodes.get('customRules').open = false;
+  nodes.get('customRules').fire('toggle');
+  assert.equal(nodes.get('chatPanel').style.values['--chat-height'], '1200px');
 });
 
 test('client renders team/tied results and non-host read-only settings', () => {

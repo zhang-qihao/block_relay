@@ -9,6 +9,7 @@ const { WebSocketServer, WebSocket } = require('ws');
 const { act, tickGame, snapshotGame, enqueueGarbage } = require('./game');
 const Rules = require('./public/rules');
 const Match = require('./match');
+const { createLeaderboard } = require('./leaderboard');
 
 const MAX_PLAYERS = 6;
 const RECONNECT_MS = 30_000;
@@ -20,6 +21,9 @@ const FILES = {
   '/rules.js': ['rules.js', 'text/javascript; charset=utf-8'],
   '/effects.js': ['effects.js', 'text/javascript; charset=utf-8'],
   '/audio.js': ['audio.js', 'text/javascript; charset=utf-8'],
+  '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
+  '/favicon.png': ['favicon.png', 'image/png'],
+  '/mascot.png': ['mascot.png', 'image/png'],
 };
 
 function lanAddresses(port) {
@@ -28,7 +32,7 @@ function lanAddresses(port) {
     .map(item => `http://${item.address}:${port}`);
 }
 
-function createApp({ countdownMs = 5000 } = {}) {
+function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {}) {
   const rooms = new Map();
   const sessions = new Map();
   const server = http.createServer((req, res) => {
@@ -62,7 +66,45 @@ function createApp({ countdownMs = 5000 } = {}) {
   function send(ws, data) {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
   }
-  function fail(ws, message) { send(ws, { type: 'error', message }); }
+  function sendLeaderboard(ws, force = false, snapshot = leaderboard.snapshot()) {
+    if (ws.player) return;
+    const signature = JSON.stringify(snapshot);
+    if (!force && ws.leaderboardSignature === signature) return;
+    ws.leaderboardSignature = signature;
+    send(ws, { type: 'leaderboardList', ...snapshot });
+  }
+  function updateLeaderboard() {
+    const snapshot = leaderboard.snapshot();
+    for (const ws of wss.clients) sendLeaderboard(ws, false, snapshot);
+  }
+  function recordScore(player) {
+    if (player.game) leaderboard.record(player.name, player.game.score, player.room.settings.mode);
+  }
+  function directory() {
+    const priority = { lobby: 0, countdown: 1, playing: 2, finished: 3 };
+    return [...rooms.values()].map(room => {
+      const online = [...room.players.values()].filter(player => player.ws).length;
+      return { code: room.code, hostName: room.players.get(room.hostId)?.name || '房主',
+        mode: room.settings.mode, presetId: room.presetId, players: room.players.size,
+        online, maxPlayers: MAX_PLAYERS, status: room.status,
+        joinable: room.status === 'lobby' && room.players.size < MAX_PLAYERS && online > 0 };
+    }).sort((a, b) => priority[a.status] - priority[b.status] || a.code.localeCompare(b.code));
+  }
+  function sendDirectory(ws, list = directory(), force = false) {
+    if (ws.player) return;
+    const signature = JSON.stringify(list);
+    if (!force && ws.directorySignature === signature) return;
+    ws.directorySignature = signature;
+    send(ws, { type: 'roomList', rooms: list });
+  }
+  function updateDirectory() {
+    const list = directory();
+    for (const ws of wss.clients) sendDirectory(ws, list);
+  }
+  function fail(ws, message) {
+    send(ws, { type: 'error', message });
+    if (!ws.player) sendDirectory(ws, directory(), true);
+  }
   function event(room, text, kind = 'info') {
     room.events.push({ id: ++room.eventId, text, kind });
     room.events = room.events.slice(-8);
@@ -93,7 +135,10 @@ function createApp({ countdownMs = 5000 } = {}) {
   }
   function finishIfNeeded(room, now = Date.now()) {
     if (room.status === 'playing') recordEliminations(room);
-    if (Match.evaluateMatch(room, now)) event(room, room.outcome.reason, 'win');
+    if (Match.evaluateMatch(room, now)) {
+      for (const player of room.participants) recordScore(player);
+      event(room, room.outcome.reason, 'win');
+    }
   }
   function recordEliminations(room) {
     for (const player of Match.recordEliminations(room)) {
@@ -102,6 +147,7 @@ function createApp({ countdownMs = 5000 } = {}) {
     }
   }
   function applyResult(room, player, result, now) {
+    if (result.locked || !player.game?.alive) recordScore(player);
     if (result.changed) room.dirty = true;
     if (result.cancelled) event(room, `${player.name} 抵消 ${result.cancelled} 行待接收障碍。`, 'defense');
     if (result.purified) event(room, `${player.name} 净化 ${result.purified} 行障碍。`, 'defense');
@@ -155,6 +201,7 @@ function createApp({ countdownMs = 5000 } = {}) {
     }
   }
   function removePlayer(room, player) {
+    recordScore(player);
     if (room.status === 'playing' || room.status === 'countdown') {
       if (player.game?.alive) player.game.alive = false;
       recordEliminations(room);
@@ -164,7 +211,7 @@ function createApp({ countdownMs = 5000 } = {}) {
     if (room.hostId === player.id) {
       room.hostId = [...room.players.values()].find(other => other.ws)?.id || room.players.keys().next().value;
     }
-    if (!room.players.size) { rooms.delete(room.code); return; }
+    if (!room.players.size) { rooms.delete(room.code); updateDirectory(); return; }
     event(room, `${player.name} 离开了房间。`);
     if (room.status === 'countdown') clearMatch(room);
     finishIfNeeded(room);
@@ -172,7 +219,7 @@ function createApp({ countdownMs = 5000 } = {}) {
     broadcast(room);
   }
   function nameOf(value) {
-    return typeof value === 'string' ? value.trim().slice(0, 14).replace(/[\x00-\x1f\x7f]/g, '') || '方块玩家' : '方块玩家';
+    return Rules.normalizeName(value) || '方块玩家';
   }
 
   wss.on('connection', ws => {
@@ -183,6 +230,8 @@ function createApp({ countdownMs = 5000 } = {}) {
     const helloTimeout = setTimeout(() => { if (!ws.player) ws.close(1008, 'Join timeout'); }, 60_000);
     ws.on('pong', () => { ws.isAlive = true; });
     send(ws, { type: 'hello' });
+    sendDirectory(ws, directory(), true);
+    sendLeaderboard(ws, true);
     ws.on('message', raw => {
       const now = Date.now();
       let data;
@@ -190,7 +239,18 @@ function createApp({ countdownMs = 5000 } = {}) {
       if (!data || typeof data !== 'object' || Array.isArray(data)) return;
       if (data.type !== 'spectatorTap') {
         if (now - ws.windowStart > 1000) { ws.windowStart = now; ws.messageCount = 0; }
-        if (++ws.messageCount > 70) return;
+        if (++ws.messageCount > 70) {
+          if (data.type === 'chat') send(ws, { type: 'chatError', code: ws.player?.room.code, message: '发送太快，请稍后再试。' });
+          return;
+        }
+      }
+      if (data.type === 'leaderboard') {
+        sendLeaderboard(ws, true);
+        return;
+      }
+      if (data.type === 'rooms') {
+        sendDirectory(ws, directory(), true);
+        return;
       }
       if (data.type === 'resume') {
         if (ws.player) return;
@@ -207,6 +267,7 @@ function createApp({ countdownMs = 5000 } = {}) {
         send(ws, { type: 'joined', id: player.id, token: player.token });
         event(room, `${player.name} 重新连接。`);
         broadcast(room);
+        send(ws, { type: 'chatHistory', code: room.code, messages: room.chat });
         return;
       }
       if (data.type === 'create' || data.type === 'join') {
@@ -219,7 +280,7 @@ function createApp({ countdownMs = 5000 } = {}) {
           room = { code, hostId: null, status: 'lobby', players: new Map(), startsAt: null,
             events: [], eventId: 0, dirty: false, settings: { ...Rules.presets.friends.settings }, presetId: 'friends', wave: 0, nextWaveAt: null, coopEndsAt: null,
             participants: [], nextOrder: 0, deadline: null, nextEnvironmentAt: null,
-            bountyId: null, nextBountyAt: null, outcome: null, roundId: 0, effects: [], effectId: 0, interactions: [], interactionId: 0 };
+            bountyId: null, nextBountyAt: null, outcome: null, roundId: 0, effects: [], effectId: 0, interactions: [], interactionId: 0, chat: [], chatId: 0 };
           rooms.set(code, room);
         } else {
           room = rooms.get(typeof data.code === 'string' ? data.code.trim().toUpperCase() : '');
@@ -243,11 +304,28 @@ function createApp({ countdownMs = 5000 } = {}) {
         send(ws, { type: 'joined', id: player.id, token: player.token });
         event(room, `${player.name} 加入房间。`);
         broadcast(room);
+        send(ws, { type: 'chatHistory', code: room.code, messages: room.chat });
         return;
       }
       const player = ws.player;
-      if (!player || player.ws !== ws) return;
+      if (!player || player.ws !== ws) {
+        if (data.type === 'chat') send(ws, { type: 'chatError', message: '请先加入房间再聊天。' });
+        return;
+      }
       const room = player.room;
+      if (data.type === 'chat') {
+        const reject = message => send(ws, { type: 'chatError', code: room.code, message });
+        if (typeof data.text !== 'string') { reject('请输入文字消息。'); return; }
+        const text = data.text.replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, '').trim();
+        if (!text || Array.from(text).length > 200) { reject('消息需为 1–200 个字符。'); return; }
+        if (player.lastChatAt != null && now - player.lastChatAt < 500) { reject('发送太快，请稍后再试。'); return; }
+        player.lastChatAt = now;
+        const message = { id: ++room.chatId, sourceId: player.id, name: player.name, text, at: now };
+        room.chat.push(message);
+        room.chat = room.chat.slice(-100);
+        for (const member of room.players.values()) send(member.ws, { type: 'chatMessage', code: room.code, message });
+        return;
+      }
       // Resolve time-based endings before accepting any late input.
       finishIfNeeded(room, now);
       if (data.type === 'preset') {
@@ -284,6 +362,8 @@ function createApp({ countdownMs = 5000 } = {}) {
         ws.player = null;
         removePlayer(room, player);
         send(ws, { type: 'left' });
+        sendLeaderboard(ws, true);
+        sendDirectory(ws, directory(), true);
       } else if (data.type === 'ready' && room.status === 'lobby') {
         player.ready = Boolean(data.ready);
         broadcast(room);
@@ -331,6 +411,7 @@ function createApp({ countdownMs = 5000 } = {}) {
       } else if (data.type === 'endPractice' && room.status === 'playing' && room.settings.mode === 'practice') {
         if (player.id !== room.hostId) { fail(ws, '只有房主可以结束练习。'); return; }
         Match.complete(room, '房主结束练习', [], null, true);
+        for (const member of room.participants) recordScore(member);
         event(room, '练习已结束。', 'win');
       } else if (data.type === 'rematch' && room.status === 'finished') {
         if (room.hostId !== player.id) { fail(ws, '等待房主返回大厅。'); return; }
@@ -344,6 +425,7 @@ function createApp({ countdownMs = 5000 } = {}) {
       clearTimeout(helloTimeout);
       const player = ws.player;
       if (!player || player.ws !== ws) return;
+      recordScore(player);
       player.ws = null;
       player.disconnectedAt = Date.now();
       event(player.room, `${player.name} 掉线，30 秒内可重连。`, 'offline');
@@ -373,6 +455,8 @@ function createApp({ countdownMs = 5000 } = {}) {
       }
       if (room.dirty) broadcast(room);
     }
+    updateDirectory();
+    updateLeaderboard();
   }, 50);
   const heartbeat = setInterval(() => {
     for (const ws of wss.clients) {
@@ -381,25 +465,33 @@ function createApp({ countdownMs = 5000 } = {}) {
     }
   }, 15_000);
 
-  function close() {
+  async function close() {
     clearInterval(timer);
     clearInterval(heartbeat);
+    for (const room of rooms.values()) for (const player of room.players.values()) recordScore(player);
     for (const ws of wss.clients) ws.terminate();
     wss.close();
-    return new Promise(resolve => server.close(resolve));
+    await new Promise(resolve => server.close(resolve));
+    if (!await leaderboard.flush()) throw new Error('排行榜保存失败，部分成绩可能未写入磁盘。');
   }
   return { server, rooms, close };
 }
 
 if (require.main === module) {
   const port = Number(process.env.PORT || 3000);
-  const app = createApp();
+  const app = createApp({ leaderboard: createLeaderboard({ file: path.join(__dirname, 'data', 'leaderboard.json') }) });
+  let closing = false;
+  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
+    if (closing) return;
+    closing = true;
+    app.close().then(() => process.exit(0), error => { console.error(error); process.exit(1); });
+  });
   app.server.listen(port, '0.0.0.0', () => {
     console.log(`\n  Block Relay · 联机俄罗斯方块\n  本机访问：http://localhost:${port}`);
     for (const address of lanAddresses(port)) console.log(`  局域网访问：${address}`);
     console.log('\n  同一局域网的玩家打开上述地址，再输入相同房间码。\n');
   });
-  app.server.on('error', error => { console.error(`启动失败：${error.message}`); process.exitCode = 1; app.close(); });
+  app.server.on('error', error => { console.error(`启动失败：${error.message}`); process.exitCode = 1; app.close().catch(error => console.error(error)); });
 }
 
 module.exports = { createApp };

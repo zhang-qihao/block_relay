@@ -135,6 +135,24 @@ async function client(url) {
   };
 }
 
+test('nickname normalization enforces twelve characters and no surrounding whitespace', async t => {
+  assert.equal(Rules.normalizeName(' \u0000 小 方块 \u0000 '), '小 方块');
+  assert.equal(Rules.normalizeName('长'.repeat(11) + ' 尾'), '长'.repeat(11));
+  assert.equal(Rules.normalizeName('é'.repeat(13)), 'é'.repeat(12));
+  const app = createApp();
+  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+  const url = `ws://127.0.0.1:${app.server.address().port}/ws`;
+  const host = await client(url);
+  host.send({ type: 'create', name: '  ' + '😀'.repeat(13) + '  ' });
+  const initial = await host.wait(isState(room => room.players.length === 1));
+  assert.equal(initial.room.players[0].name, '😀'.repeat(12));
+  const guest = await client(url);
+  guest.send({ type: 'join', code: initial.room.code, name: '  \u0000  ' });
+  const joined = await guest.wait(isState(room => room.players.length === 2));
+  assert.equal(joined.room.players[1].name, '方块玩家');
+});
+
 test('room capacity, malformed messages and game state validation', async t => {
   const app = createApp();
   await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
@@ -646,6 +664,158 @@ test('spectator taps validate permissions, coordinates, and accept every rapid c
   assert.deepEqual(lobby.room.interactions, []);
 });
 
+test('public room directory follows lifecycle without exposing sessions or boards', async t => {
+  const { room, clients: [a, b], ids, url } = await connectedRoom(t, null, 2);
+  const visitor = await client(url);
+  const listed = await visitor.wait(data => data.type === 'roomList' && data.rooms.length === 1);
+  const entry = listed.rooms[0];
+  assert.deepEqual(Object.keys(entry).sort(), ['code', 'hostName', 'mode', 'presetId', 'players', 'online', 'maxPlayers', 'status', 'joinable'].sort());
+  assert.equal(entry.code, room.code);
+  assert.equal(entry.hostName, '房主');
+  assert.equal(entry.players, 2);
+  assert.equal(entry.joinable, true);
+  a.send({ type: 'preset', id: 'duel' });
+  await visitor.wait(data => data.type === 'roomList' && data.rooms[0].presetId === 'duel');
+  await readyAndStart([a, b]);
+  const running = await visitor.wait(data => data.type === 'roomList' && data.rooms[0].status === 'playing');
+  assert.equal(running.rooms[0].joinable, false);
+  visitor.send({ type: 'join', code: room.code, name: '迟到' });
+  await visitor.wait(data => data.type === 'error' && data.message.includes('对战'));
+  room.players.get(ids[1]).game.alive = false;
+  await visitor.wait(data => data.type === 'roomList' && data.rooms[0].status === 'finished');
+  a.send({ type: 'rematch' });
+  await visitor.wait(data => data.type === 'roomList' && data.rooms[0].joinable);
+  a.send({ type: 'leave' });
+  await visitor.wait(data => data.type === 'roomList' && data.rooms[0].hostName === '玩家1' && data.rooms[0].players === 1);
+  b.send({ type: 'leave' });
+  await visitor.wait(data => data.type === 'roomList' && data.rooms.length === 0);
+  visitor.send({ type: 'rooms' });
+  const empty = await visitor.wait(data => data.type === 'roomList' && data.rooms.length === 0);
+  assert.deepEqual(empty.rooms, []);
+});
+
+test('room directory handles offline/full rooms and does not spam idle visitors', async t => {
+  const { room, clients, ids, url } = await connectedRoom(t, null, 6);
+  const visitor = await client(url);
+  const list = await visitor.wait(data => data.type === 'roomList' && data.rooms.length === 1);
+  assert.equal(list.rooms[0].joinable, false);
+  assert.equal(list.rooms[0].players, 6);
+  let extraLists = 0;
+  visitor.ws.on('message', raw => { if (JSON.parse(raw).type === 'roomList') extraLists++; });
+  await new Promise(resolve => setTimeout(resolve, 120));
+  assert.equal(extraLists, 0, 'unchanged summaries are not broadcast on every tick');
+  const disconnected = clients.map(client => new Promise(resolve => client.ws.once('close', resolve)));
+  for (const client of clients) client.ws.close();
+  await Promise.all(disconnected);
+  const offline = await visitor.wait(data => data.type === 'roomList' && data.rooms[0].online === 0);
+  assert.equal(offline.rooms[0].joinable, false);
+  const resumed = await client(url);
+  resumed.send({ type: 'resume', token: room.players.get(ids[0]).token });
+  await resumed.wait(data => data.type === 'joined');
+  await visitor.wait(data => data.type === 'roomList' && data.rooms[0].online === 1);
+});
+
+test('room chat isolates rooms, validates messages and preserves history through reconnect and rematch', async t => {
+  const { room, clients: [a, b], ids, url } = await connectedRoom(t, null, 2);
+  const outsider = await client(url);
+  outsider.send({ type: 'chat', text: '未入房' });
+  await outsider.wait(data => data.type === 'chatError');
+  outsider.send({ type: 'create', name: '另一个房间' });
+  await outsider.wait(data => data.type === 'joined');
+  const other = await outsider.wait(isState(value => value.players.length === 1));
+  let leaked = 0;
+  outsider.ws.on('message', raw => { if (JSON.parse(raw).type === 'chatMessage') leaked++; });
+  for (const text of ['', '  ', 12, 'a'.repeat(201)]) {
+    a.send({ type: 'chat', text });
+    await a.wait(data => data.type === 'chatError');
+  }
+  a.send({ type: 'chat', text: '  <img src=x onerror=bad>你好\u0000  ', name: '伪造', code: other.room.code });
+  const message = await b.wait(data => data.type === 'chatMessage');
+  assert.equal(message.code, room.code);
+  assert.equal(message.message.name, '房主');
+  assert.equal(message.message.text, '<img src=x onerror=bad>你好');
+  assert.equal(message.message.sourceId, ids[0]);
+  a.send({ type: 'chat', text: '刷屏' });
+  await a.wait(data => data.type === 'chatError' && data.message.includes('太快'));
+  assert.equal(leaked, 0);
+  const token = room.players.get(ids[1]).token;
+  const closed = new Promise(resolve => b.ws.once('close', resolve));
+  b.ws.close(); await closed;
+  await a.wait(isState(value => !value.players[1].connected));
+  const resumed = await client(url);
+  resumed.send({ type: 'resume', token });
+  await resumed.wait(data => data.type === 'joined');
+  const history = await resumed.wait(data => data.type === 'chatHistory');
+  assert.equal(history.messages.length, 1);
+  assert.equal(history.messages[0].text, message.message.text);
+  await readyAndStart([a, resumed]);
+  room.players.get(ids[1]).game.alive = false;
+  await a.wait(isState(value => value.status === 'finished'));
+  a.send({ type: 'rematch' });
+  await a.wait(isState(value => value.status === 'lobby'));
+  assert.equal(room.chat.length, 1);
+  a.send({ type: 'leave' });
+  await resumed.wait(isState(value => value.players.length === 1));
+  assert.equal(room.chat.length, 1);
+  resumed.send({ type: 'leave' });
+  await resumed.wait(data => data.type === 'left');
+  assert.equal(room.players.size, 0);
+});
+
+test('chat rejected by the global message limit receives an error and can retry', async t => {
+  const { room, clients: [a], ids } = await connectedRoom(t, { mode: 'practice' }, 1);
+  const socket = room.players.get(ids[0]).ws;
+  socket.windowStart = Date.now();
+  socket.messageCount = 70;
+  a.send({ type: 'chat', text: '限流后重试' });
+  const rejected = await a.wait(data => data.type === 'chatError');
+  assert.equal(rejected.code, room.code);
+  assert.match(rejected.message, /发送太快/);
+  assert.equal(room.chat.length, 0);
+  assert.equal(a.ws.readyState, WebSocket.OPEN);
+  socket.windowStart = Date.now() - 1001;
+  a.send({ type: 'chat', text: '限流后重试' });
+  const accepted = await a.wait(data => data.type === 'chatMessage');
+  assert.equal(accepted.message.text, '限流后重试');
+  assert.equal(room.chat.length, 1);
+});
+
+test('chat stores only the latest hundred messages and counts Unicode characters', async t => {
+  const { room, clients: [a], ids } = await connectedRoom(t, { mode: 'practice' }, 1);
+  for (let i = 0; i < 103; i++) {
+    room.players.get(ids[0]).lastChatAt = null;
+    room.players.get(ids[0]).ws.messageCount = 0;
+    a.send({ type: 'chat', text: i === 102 ? '😀'.repeat(200) : `消息${i}` });
+    await a.wait(data => data.type === 'chatMessage' && data.message.id === i + 1);
+  }
+  assert.equal(room.chat.length, 100);
+  assert.equal(room.chat[0].id, 4);
+  assert.equal(Array.from(room.chat.at(-1).text).length, 200);
+});
+
+test('leaderboard records authoritative scores on lock and departure, never client-reported values', async t => {
+  const { room, clients: [a], ids, url } = await connectedRoom(t, { mode: 'practice' }, 1);
+  const visitor = await client(url);
+  const initial = await visitor.wait(data => data.type === 'leaderboardList');
+  assert.deepEqual(initial.entries, []);
+  a.send({ type: 'score', score: 999999 });
+  visitor.send({ type: 'leaderboard', score: 999999 });
+  assert.deepEqual((await visitor.wait(data => data.type === 'leaderboardList')).entries, []);
+  await readyAndStart([a]);
+  setupClear(room.players.get(ids[0]).game, 4);
+  a.send({ type: 'action', action: 'drop' });
+  const record = await visitor.wait(data => data.type === 'leaderboardList' && data.entries.length === 1);
+  assert.equal(record.entries[0].name, '房主');
+  assert.equal(record.entries[0].score, room.players.get(ids[0]).game.score);
+  assert.deepEqual(Object.keys(record.entries[0]).sort(), ['name', 'score', 'mode', 'at', 'rank'].sort());
+  a.send({ type: 'action', action: 'down' });
+  const before = record.entries[0].score;
+  await a.wait(isState(value => value.players[0].game?.score > before));
+  a.send({ type: 'leave' });
+  const final = await visitor.wait(data => data.type === 'leaderboardList' && data.entries[0]?.score > before);
+  assert.equal(final.entries[0].mode, 'practice');
+});
+
 const isState = predicate => data => data.type === 'state' && predicate(data.room);
 
 test('three clients: room, attacks, targeting, reconnect, finish and rematch', async t => {
@@ -658,7 +828,7 @@ test('three clients: room, attacks, targeting, reconnect, finish and rematch', a
   assert.equal(response.status, 200);
   assert.match(await response.text(), /mainBoard/);
   assert.match(response.headers.get('content-security-policy'), /script-src 'self'/);
-  for (const file of ['/app.js', '/styles.css', '/effects.js']) {
+  for (const file of ['/app.js', '/styles.css', '/effects.js', '/favicon.svg']) {
     const resource = await fetch(`${base}${file}`);
     assert.equal(resource.status, 200);
     assert.ok((await resource.text()).length > 100);

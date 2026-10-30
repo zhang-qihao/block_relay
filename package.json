@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check game.js && node --check match.js && node --check server.js && node --check public/rules.js && node --check public/effects.js && node --check public/audio.js && node --check public/app.js",
+    "check": "node --check leaderboard.js && node --check game.js && node --check match.js && node --check server.js && node --check public/rules.js && node --check public/effects.js && node --check public/audio.js && node --check public/app.js",
     "test": "node --test test/*.test.js",
     "test:browser": "node test/browser-smoke.js"
   },
