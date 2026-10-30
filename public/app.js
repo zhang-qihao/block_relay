@@ -171,12 +171,9 @@ function message(value) {
 function me() { return state.room?.players.find(player => player.id === state.id); }
 function canSpectatorTap() { return state.connected && state.room?.status === 'playing' && Boolean(me()?.game) && !me().game.alive; }
 let spectatorEffect = 'glass';
-let lastLocalTap = -Infinity;
 function spectatorTap(targetId, x, y) {
   if (!canSpectatorTap()) return;
-  if (Date.now() - lastLocalTap < 500) { text('spectatorHint', '敲慢一点，半秒后再来。'); return; }
   if (send({ type: 'spectatorTap', targetId, effect: spectatorEffect, x, y })) {
-    lastLocalTap = Date.now();
     text('spectatorHint', `已送出${Rules.spectatorEffects[spectatorEffect][0]}，不影响对局。`);
   }
 }
@@ -209,6 +206,10 @@ function connect() {
       state.room = data.room;
       serverOffset = data.room.serverNow - Date.now();
       render();
+    } else if (data.type === 'spectatorInteraction') {
+      if (state.room?.code === data.code && state.room.roundId === data.roundId && state.room.status === 'playing') {
+        battleEffects.interact(data.interaction);
+      }
     } else if (data.type === 'tapError') {
       text('spectatorHint', data.message);
     } else if (data.type === 'error') {
@@ -248,7 +249,6 @@ function resetRoom() {
   show($('countdownModal'), false);
   battleEffects.clear(true);
   stopRepeat();
-  lastLocalTap = -Infinity;
   state.room = null;
   document.body.classList.remove('controls-visible');
   document.body.classList.remove('match-visible');

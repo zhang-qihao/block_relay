@@ -308,6 +308,14 @@
       for (const effect of active) drawEffect(effect, now);
       if (active.length || taps.length) frame = root.requestAnimationFrame(draw);
     }
+    function interact(tap) {
+      if (tap.id <= lastTapId || !Object.hasOwn(root.BlockRules.spectatorEffects, tap.effect)) return;
+      lastTapId = tap.id;
+      if (root.document.hidden) return;
+      taps = taps.filter(item => root.performance.now() - item.born < (motion.matches ? 650 : 1050));
+      taps.push({ ...tap, born: root.performance.now() });
+      if (frame === null) frame = root.requestAnimationFrame(draw);
+    }
     function sync(room, id, now) {
       selfId = id;
       const nextKey = `${room.code}:${room.roundId}`;
@@ -323,7 +331,6 @@
         if (room.status === 'playing' && tap.id > lastTapId && now - tap.at >= -250 && now - tap.at < 1500 &&
             Object.hasOwn(root.BlockRules.spectatorEffects, tap.effect)) taps.push({ ...tap, born: root.performance.now() });
       }
-      taps = taps.slice(-12);
       lastTapId = latestTap;
       const fresh = records.filter(record => record.id > lastId && now - record.at >= -250 && now - record.at < 2500);
       lastId = latest;
@@ -360,7 +367,7 @@
     }
     root.document.addEventListener('visibilitychange', () => { if (root.document.hidden) clear(); });
     motion.addEventListener('change', () => clear());
-    return { sync, clear };
+    return { sync, clear, interact };
   }
   root.BlockEffects = { create };
 })(window);

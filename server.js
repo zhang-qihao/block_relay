@@ -143,7 +143,6 @@ function createApp({ countdownMs = 5000 } = {}) {
     room.participants = [];
     room.effects = [];
     room.interactions = [];
-    room.tapTimes = [];
     room.wave = 0;
     room.nextWaveAt = null;
     room.coopEndsAt = null;
@@ -186,11 +185,13 @@ function createApp({ countdownMs = 5000 } = {}) {
     send(ws, { type: 'hello' });
     ws.on('message', raw => {
       const now = Date.now();
-      if (now - ws.windowStart > 1000) { ws.windowStart = now; ws.messageCount = 0; }
-      if (++ws.messageCount > 70) return;
       let data;
       try { data = JSON.parse(raw.toString()); } catch { fail(ws, '消息格式错误。'); return; }
       if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+      if (data.type !== 'spectatorTap') {
+        if (now - ws.windowStart > 1000) { ws.windowStart = now; ws.messageCount = 0; }
+        if (++ws.messageCount > 70) return;
+      }
       if (data.type === 'resume') {
         if (ws.player) return;
         const session = sessions.get(data.token);
@@ -218,7 +219,7 @@ function createApp({ countdownMs = 5000 } = {}) {
           room = { code, hostId: null, status: 'lobby', players: new Map(), startsAt: null,
             events: [], eventId: 0, dirty: false, settings: { ...Rules.presets.friends.settings }, presetId: 'friends', wave: 0, nextWaveAt: null, coopEndsAt: null,
             participants: [], nextOrder: 0, deadline: null, nextEnvironmentAt: null,
-            bountyId: null, nextBountyAt: null, outcome: null, roundId: 0, effects: [], effectId: 0, interactions: [], interactionId: 0, tapTimes: [] };
+            bountyId: null, nextBountyAt: null, outcome: null, roundId: 0, effects: [], effectId: 0, interactions: [], interactionId: 0 };
           rooms.set(code, room);
         } else {
           room = rooms.get(typeof data.code === 'string' ? data.code.trim().toUpperCase() : '');
@@ -294,8 +295,6 @@ function createApp({ countdownMs = 5000 } = {}) {
         room.roundId++;
         room.effects = [];
         room.interactions = [];
-        room.tapTimes = [];
-        for (const member of room.players.values()) member.lastTapAt = null;
         event(room, `即将开始：${Rules.modes[room.settings.mode][0]} / ${room.settings.mode === 'practice' ? '无攻击' : Rules.attacks[room.settings.attack][0]}`);
         broadcast(room);
       } else if (data.type === 'spectatorTap') {
@@ -307,15 +306,12 @@ function createApp({ countdownMs = 5000 } = {}) {
             !Number.isFinite(data.x) || !Number.isFinite(data.y) || data.x < 0 || data.x > 1 || data.y < 0 || data.y > 1) {
           reject('互动类型或点击位置无效。'); return;
         }
-        room.tapTimes = room.tapTimes.filter(time => now - time < 1000);
-        if ((player.lastTapAt != null && now - player.lastTapAt < 500) || room.tapTimes.length >= 8) {
-          reject('敲慢一点，每人半秒一次。'); return;
-        }
-        player.lastTapAt = now;
-        room.tapTimes.push(now);
-        room.interactions.push({ id: ++room.interactionId, at: now, sourceId: player.id, sourceName: player.name,
-          targetId: target.id, effect: data.effect, x: data.x, y: data.y });
-        room.dirty = true;
+        const interaction = { id: ++room.interactionId, at: now, sourceId: player.id, sourceName: player.name,
+          targetId: target.id, effect: data.effect, x: data.x, y: data.y };
+        // Deliver every accepted click immediately, independently of snapshot history.
+        for (const member of room.players.values()) send(member.ws, {
+          type: 'spectatorInteraction', code: room.code, roundId: room.roundId, interaction,
+        });
       } else if (data.type === 'action' && room.status === 'playing' && ACTIONS.has(data.action)) {
         applyResult(room, player, act(player.game, data.action, now), now);
         recordEliminations(room);

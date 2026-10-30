@@ -68,6 +68,7 @@ async function main() {
       connections.push(cdp);
       const errors = [];
       const audioContexts = [];
+      const receivedInteractions = [];
       cdp.socket.on('message', raw => {
         const message = JSON.parse(raw);
         if (message.method === 'WebAudio.contextCreated') audioContexts.push(message.params.context);
@@ -75,8 +76,15 @@ async function main() {
           const context = audioContexts.find(item => item.contextId === message.params.context.contextId);
           if (context) Object.assign(context, message.params.context);
         }
+        if (message.method === 'Network.webSocketFrameReceived') {
+          try {
+            const data = JSON.parse(message.params.response.payloadData);
+            if (data.type === 'spectatorInteraction') receivedInteractions.push(data.interaction);
+          } catch {}
+        }
         if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails);
       });
+      await cdp.call('Network.enable');
       await cdp.call('WebAudio.enable');
       await cdp.call('Runtime.enable');
       await cdp.call('Page.enable');
@@ -88,7 +96,7 @@ async function main() {
         return result.result.value;
       }
       await until(() => evaluate(`typeof state !== 'undefined' && state.connected === true && document.querySelector('#createButton')?.disabled === false`), 'page connection');
-      return { cdp, evaluate, errors, audioContexts };
+      return { cdp, evaluate, errors, audioContexts, receivedInteractions };
     }
     const a = await page();
     const b = await page();
@@ -347,7 +355,7 @@ async function main() {
       await c.cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
       await c.cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
       await until(() => room.interactionId > previous, `real spectator click ${effect}`);
-      const interaction = room.interactions.at(-1);
+      const interaction = await until(() => b.receivedInteractions.find(item => item.id === previous + 1), 'immediate spectator message');
       assert.ok(Math.abs(interaction.x - .3) < .02 && Math.abs(interaction.y - .4) < .02);
       assert.equal(interaction.effect, effect);
       await sleep(150);
@@ -376,7 +384,15 @@ async function main() {
     await c.cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: touch.x, y: touch.y }] });
     await c.cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await until(() => room.interactionId > previous, 'mobile touch spectator tap');
-    assert.ok(Math.abs(room.interactions.at(-1).x - .5) < .03);
+    const mobileInteraction = await until(() => b.receivedInteractions.find(item => item.id === previous + 1), 'mobile immediate interaction');
+    assert.ok(Math.abs(mobileInteraction.x - .5) < .03);
+    const burstStart = room.interactionId;
+    for (let i = 0; i < 20; i++) {
+      await c.cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: touch.x, y: touch.y }] });
+      await c.cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    }
+    await until(() => room.interactionId === burstStart + 20 && b.receivedInteractions.filter(item => item.id > burstStart).length === 20, 'every rapid touch delivered');
+    console.log('Twenty rapid genuine touches delivered individually without cooldown.');
     assert.equal(await c.evaluate(`document.documentElement.scrollWidth > innerWidth`), false);
     assert.deepEqual(c.errors, []);
     assert.deepEqual(b.errors, []);

@@ -400,6 +400,21 @@ test('gesture tap rotates, horizontal drag moves, downward drag soft drops but n
   assert.equal(ws.sent.length, before);
 });
 
+test('spectator rapid clicks are sent individually without a local cooldown', () => {
+  const { room, receive, nodes, ws } = browserFixture();
+  room.status = 'playing';
+  room.players[0].game.alive = false;
+  receive();
+  const card = nodes.get('playerMonitors').children[1];
+  const before = ws.sent.length;
+  for (let i = 0; i < 30; i++) {
+    card.fire('pointerdown', { pointerId: 1, clientX: 125, clientY: 250 });
+    card.fire('click', { detail: 1, clientX: 125, clientY: 250 });
+  }
+  assert.equal(ws.sent.length - before, 30);
+  assert.ok(ws.sent.slice(before).every(message => message.type === 'spectatorTap'));
+});
+
 test('client renders team/tied results and non-host read-only settings', () => {
   const { room, receive, nodes } = browserFixture();
   room.hostId = '1';

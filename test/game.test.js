@@ -604,7 +604,7 @@ test('same-tick sprint target completion awards both players', async t => {
   assert.deepEqual(end.room.outcome.results.map(player => player.rank), [1, 1]);
 });
 
-test('spectator taps validate permissions, coordinates, rate limit and do not change gameplay', async t => {
+test('spectator taps validate permissions, coordinates, and accept every rapid click without changing gameplay', async t => {
   const { room, clients: [a, b, c], ids } = await connectedRoom(t, null, 3);
   const tap = { type: 'spectatorTap', targetId: ids[1], effect: 'glass', x: .25, y: .75 };
   a.send(tap);
@@ -621,22 +621,22 @@ test('spectator taps validate permissions, coordinates, rate limit and do not ch
   const before = room.players.get(ids[1]).game;
   const totals = [before.score, before.lines, before.pending, before.sent];
   for (const effect of Object.keys(Rules.spectatorEffects)) {
-    room.players.get(ids[0]).lastTapAt = null;
     a.send({ ...tap, effect, sourceName: 'fake name' });
-    const update = await b.wait(isState(value => value.interactions.some(item => item.effect === effect)));
-    const last = update.room.interactions.at(-1);
+    const update = await b.wait(data => data.type === 'spectatorInteraction' && data.interaction.effect === effect);
+    const last = update.interaction;
     assert.equal(last.sourceId, ids[0]);
     assert.equal(last.sourceName, '房主');
     assert.equal(last.x, .25);
     assert.equal(last.y, .75);
   }
   assert.deepEqual([before.score, before.lines, before.pending, before.sent], totals);
-  a.send(tap);
-  await a.wait(data => data.type === 'tapError' && data.message.includes('慢'));
-  room.players.get(ids[0]).lastTapAt = null;
-  room.tapTimes = Array(8).fill(Date.now());
-  a.send(tap);
-  await a.wait(data => data.type === 'tapError');
+  const initialId = room.interactionId;
+  for (let i = 0; i < 100; i++) a.send({ ...tap, x: i / 100 });
+  const messages = [];
+  for (let i = 0; i < 100; i++) messages.push(await b.wait(data => data.type === 'spectatorInteraction'));
+  assert.deepEqual(messages.map(message => message.interaction.id), Array.from({ length: 100 }, (_, i) => initialId + i + 1));
+  assert.equal(room.interactionId, initialId + 100);
+  assert.deepEqual([before.score, before.lines, before.pending, before.sent], totals);
   room.players.get(ids[2]).game.alive = false;
   await b.wait(isState(value => value.status === 'finished'));
   a.send(tap);

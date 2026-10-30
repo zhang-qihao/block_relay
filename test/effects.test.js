@@ -228,11 +228,22 @@ test('spectator reduced motion stays static, clipped, and does not evict an atta
   f.controller.sync(f.room, 'self', 1000);
   f.frame(1100);
   assert.equal(f.incoming.length, 1);
-  assert.ok(f.calls.filter(call => call.name === 'clip').length <= 12);
+  assert.equal(f.calls.filter(call => call.name === 'clip').length, 20);
   assert.equal(f.animations.length, 0);
   const draws = f.calls.filter(call => call.name === 'translate');
   f.frame(1200);
   assert.deepEqual(f.calls.filter(call => call.name === 'translate').slice(draws.length).map(call => call.args), draws.map(call => call.args));
+});
+
+test('immediate spectator messages render every click without snapshot truncation', () => {
+  const f = fixture();
+  for (let i = 1; i <= 100; i++) f.controller.interact({ id: i, sourceName: '观众', targetId: 'self', effect: 'glass', x: .5, y: .5 });
+  f.controller.sync(f.room, 'self', 1000);
+  f.frame(1100);
+  assert.equal(f.calls.filter(call => call.name === 'clip').length, 100);
+  f.controller.interact({ id: 100, sourceName: '观众', targetId: 'self', effect: 'glass', x: .5, y: .5 });
+  f.frame(2200);
+  assert.equal(f.frames.size, 0);
 });
 
 test('only local fresh clears emit an audio callback, never duplicate snapshots', () => {
