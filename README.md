@@ -35,6 +35,30 @@ npm start
 PORT=3001 npm start
 ```
 
+后台启动（macOS／Linux）：
+
+```bash
+bash app.sh start
+```
+
+停止或重启：
+
+```bash
+bash app.sh stop
+```
+
+```bash
+bash app.sh restart
+```
+
+一键从 `origin/master` 快进更新、安装依赖、检查代码并重启：
+
+```bash
+bash update.sh
+```
+
+脚本将日志写入 `logs/app.log`，进程和端口记录在 `.run/`；可用 `PORT=3001 bash app.sh start` 指定端口，后续重启会沿用。首次使用前请停止之前通过 `npm start` 或 `nohup` 启动的服务，脚本不会接管或误杀其他进程。更新会清空对局；遇到未提交文件、分支分叉、依赖安装或检查失败时不执行重启，不强制覆盖本地代码。此脚本不提供开机自启，电脑休眠时无法继续提供服务。
+
 ## 玩法列表
 
 | 玩法 | 怎么玩 | 人数 |
