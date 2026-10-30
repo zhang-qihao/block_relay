@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "block-relay",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["server.js"],
+      "port": 3000
+    },
+    {
+      "name": "block-relay-modes",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["PORT=3001", "node", "server.js"],
+      "port": 3001
+    }
+  ]
+}

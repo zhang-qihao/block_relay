@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b1020" />
+    <title>方块来袭 · Block Relay</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section id="lobbyView" class="view lobby-view">
+        <div class="lobby-copy">
+          <p class="eyebrow">Block Relay · 局域网联机</p>
+          <h1>方块来袭<span class="title-subtitle">消行，反击，一起开局。</span></h1>
+          <p class="lede">同一 Wi-Fi，打开浏览器就能玩。和朋友消行互攻，也可以一起合作守城。</p>
+          <div class="signal-line"><span class="signal-dot"></span><span id="connectionLabel">正在连接房间服务…</span></div>
+        </div>
+        <div class="lobby-panel panel-surface">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">无需账号，即刻加入</p>
+              <h2>进入对局</h2>
+            </div>
+            <span class="panel-mark">▦</span>
+          </div>
+          <label class="field-label" for="nameInput">你的昵称</label>
+          <input id="nameInput" class="text-input" maxlength="14" placeholder="例如：阿岚" autocomplete="nickname" />
+          <div class="lobby-actions">
+            <button id="createButton" class="button button-primary" type="button">创建房间</button>
+            <div class="join-row">
+              <input id="roomInput" class="text-input room-input" maxlength="4" placeholder="房间码" autocomplete="off" />
+              <button id="joinButton" class="button button-secondary" type="button">加入</button>
+            </div>
+          </div>
+          <p id="lobbyMessage" class="form-message" role="status"></p>
+          <div class="how-it-works">
+            <p class="eyebrow">一起玩，很简单</p>
+            <p>选一个玩法就能开局：朋友互攻、挖掘挑战，或者一起合作守城。需要时再展开调整规则。</p><p id="lanHint" class="lan-hint"></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="roomView" class="view room-view is-hidden">
+        <header class="topbar">
+          <div class="brand-lockup"><span class="brand-glyph">▦</span><span>方块来袭<small>Block Relay</small></span></div>
+          <div class="room-status"><span class="eyebrow">房间</span><strong id="roomCodeLabel">----</strong><span class="status-divider"></span><span id="playerCountLabel">0 / 6 players</span></div>
+          <button id="leaveButton" class="text-button" type="button">离开房间</button>
+        </header>
+
+        <div id="waitingPanel" class="waiting-panel panel-surface">
+          <div class="waiting-intro">
+            <p class="eyebrow">准备大厅</p>
+            <h1>这局，怎么玩？</h1>
+            <p>选好玩法，邀请朋友。所有人准备后即可开始。</p>
+            <div class="room-code-display"><span>房间码</span><strong id="roomCodeLarge">----</strong><button id="copyRoomButton" class="icon-button" title="复制房间码" type="button">⧉</button></div>
+            <div class="room-settings">
+              <div class="section-caption"><span>对局规则</span><span id="settingsPermission">房主设置</span></div>
+              <label class="field-label" for="presetSelect">推荐玩法<select id="presetSelect" class="text-input"></select></label>
+              <p id="presetGoal" class="preset-goal"></p>
+              <p id="presetSummary" class="rule-description"></p>
+              <details id="customRules" class="custom-rules"><summary>调整规则</summary>
+              <label class="field-label" for="modeSelect">胜利方式<select id="modeSelect" class="text-input" data-setting="mode"></select></label>
+              <p id="modeDescription" class="rule-description"></p>
+              <label class="field-label" for="attackSelect">攻击分配<select id="attackSelect" class="text-input" data-setting="attack"></select></label>
+              <p id="attackDescription" class="rule-description"></p>
+              <label id="durationField" class="field-label is-hidden" for="durationSelect">比赛时长<select id="durationSelect" class="text-input" data-setting="duration"><option value="60">1 分钟</option><option value="180">3 分钟</option><option value="300">5 分钟</option></select></label>
+              <label id="goalField" class="field-label is-hidden" for="goalSelect">目标消行<select id="goalSelect" class="text-input" data-setting="goal"><option value="20">20 行</option><option value="40">40 行</option><option value="80">80 行</option></select></label>
+              <label id="digRowsField" class="field-label is-hidden" for="digRowsSelect">初始障碍<select id="digRowsSelect" class="text-input" data-setting="digRows"><option value="4">4 行 · 入门</option><option value="8">8 行 · 标准</option><option value="12">12 行 · 挑战</option></select></label>
+              <label id="wavesField" class="field-label is-hidden" for="wavesSelect">目标波数<select id="wavesSelect" class="text-input" data-setting="waves"><option value="3">3 波</option><option value="5">5 波</option><option value="8">8 波</option></select></label>
+              <div id="ruleToggles" class="rule-toggles"></div>
+              <p class="rule-description">灰色障碍补齐缺口即可消除；净化不增加消行进度。挖掘挑战禁止净化，合作守城自动先自保再救援。</p>
+              </details>
+            </div>
+          </div>
+          <div class="waiting-roster-wrap">
+            <div class="section-caption"><span>房间玩家</span><span id="readyCountLabel">0 ready</span></div>
+            <div id="waitingRoster" class="waiting-roster"></div>
+            <label id="teamField" class="field-label is-hidden" for="teamSelect">我的队伍<select id="teamSelect" class="text-input"><option value="red">红队</option><option value="blue">蓝队</option></select></label>
+            <button id="readyButton" class="button button-secondary" type="button">准备</button>
+            <button id="startButton" class="button button-primary is-hidden" type="button">开始对局</button>
+            <p id="roomMessage" class="form-message" role="status"></p>
+          </div>
+        </div>
+
+        <div id="gamePanel" class="game-panel is-hidden">
+          <div class="match-strip"><span id="matchRulesLabel"></span><strong id="matchClock"></strong><span id="specialRuleLabel"></span><button id="endPracticeButton" class="text-button is-hidden" type="button">结束练习</button></div>
+          <div class="game-toolbar">
+            <div class="game-state"><span id="gamePulse" class="pulse-dot"></span><span id="gameStateLabel">LIVE MATCH</span></div>
+            <div id="eventTicker" class="event-ticker" aria-live="polite">等待第一波交锋…</div>
+            <div class="toolbar-hint">选择对手卡片设为攻击目标 <span class="keycap">T</span></div>
+          </div>
+          <div class="game-layout">
+            <aside class="player-console">
+              <div class="console-block piece-preview-block">
+                <div class="section-caption"><span>下一个</span><span id="nextPieceName">—</span></div>
+                <div id="nextPreview" class="piece-preview" aria-label="下一个方块"></div>
+              </div>
+              <div class="console-block stat-block">
+                <div class="stat-line"><span>分数</span><strong id="scoreValue">0</strong></div>
+                <div class="stat-line"><span>等级</span><strong id="levelValue">1</strong></div>
+                <div class="stat-line"><span>清除</span><strong id="linesValue">0</strong></div>
+              </div>
+              <div class="console-block hold-block"><div class="section-caption"><span>暂存方块</span><span id="holdHint">C / SHIFT</span></div><div id="holdPreview" class="piece-preview hold-preview" aria-label="暂存方块"></div></div>
+              <div class="console-block attack-block"><div class="section-caption"><span>受击暂存</span><span id="attackValue">空</span></div><p class="reserve-hint">每条横排代表一行障碍</p><div id="attackQueue" class="attack-queue" role="list" aria-label="等待入盘的障碍行"></div><div id="cancelledReserve" class="cancelled-reserve is-hidden"><span class="reserve-caption">刚抵消</span><div id="cancelledRows" class="reserve-cleared" role="list" aria-label="刚刚抵消的障碍行"></div></div></div>
+              <div class="console-block defense-block"><div class="section-caption"><span>净化能量</span><span id="energyValue">0 / 12</span></div><button id="cleanseButton" class="button button-secondary cleanse-button" type="button">净化（V · 6 点）</button><p id="defenseStats" class="rule-description"></p></div>
+              <div class="console-block target-block"><div class="section-caption"><span>当前目标</span><span class="target-glyph">⌁</span></div><div id="targetName" class="target-name">自动选择</div></div>
+            </aside>
+
+            <section class="board-stage">
+              <div class="board-frame"><canvas id="mainBoard" class="main-board" aria-label="你的俄罗斯方块棋盘"></canvas><div id="hitOverlay" class="hit-overlay is-hidden" aria-hidden="true"></div><div id="boardOverlay" class="board-overlay is-hidden"><div id="overlayMessage"></div></div></div>
+              <div id="incomingNotice" class="incoming-notice is-hidden" role="status" aria-live="polite"></div>
+              <div class="board-footer"><div class="control-legend"><span><span class="keycap">← →</span>移动</span><span><span class="keycap">↑</span>旋转</span><span><span class="keycap">SPACE</span>硬降</span></div><div id="dangerLabel" class="danger-label"></div></div>
+              <div class="touch-controls" aria-label="触控操作"><button data-action="left" type="button">←</button><button data-action="rotate" type="button">↻</button><button data-action="right" type="button">→</button><button data-action="down" type="button">↓</button><button data-action="drop" type="button" class="touch-drop">硬降</button><button data-action="hold" type="button">暂存</button></div>
+            </section>
+
+            <aside class="spectator-panel"><div class="spectator-heading"><div><p class="eyebrow">实时棋盘</p><h2>场上玩家</h2></div><span id="spectatorCount" class="spectator-count">0</span></div><div id="playerMonitors" class="player-monitors"></div><div class="spectator-footer"><span class="live-ring"></span><span>实时同步中</span></div></aside>
+          </div>
+        </div>
+        <div id="finishOverlay" class="finish-overlay is-hidden"><div class="finish-card panel-surface"><p class="eyebrow">本轮成绩</p><h2 id="finishTitle">这一轮结束了。</h2><div id="rankingList" class="ranking-list"></div><button id="rematchButton" class="button button-primary" type="button">回到大厅</button></div></div>
+      </section>
+    </main>
+    <section id="countdownModal" class="countdown-modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="countdownMode" aria-describedby="countdownGoal">
+      <div id="countdownGuide" class="countdown-guide">
+        <span class="countdown-caption">本局玩法 · 即将开始</span>
+        <strong id="countdownNumber" class="countdown-number">5</strong>
+        <h2 id="countdownMode"></h2><p id="countdownGoal"></p>
+        <div class="countdown-rule"><strong id="countdownAttack"></strong><p id="countdownAttackHint"></p></div>
+        <p id="countdownDefense" class="countdown-defense"></p>
+        <p class="countdown-keys">← → 移动　↑ 旋转　空格硬降　C 暂存　V 净化</p>
+      </div>
+    </section>
+    <aside id="incomingToast" class="incoming-toast is-hidden" role="status" aria-live="polite"><span id="incomingToastTitle">攻击来袭</span><strong id="incomingToastText"></strong><small id="incomingToastHint">已进入待接收队列，仍可抵消或净化</small></aside>
+    <canvas id="battleEffects" class="battle-effects" aria-hidden="true"></canvas>
+    <script src="/rules.js" defer></script>
+    <script src="/effects.js" defer></script>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
