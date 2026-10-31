@@ -84,7 +84,10 @@ function browserFixture(width = 1200) {
     const button = new Node('button'); button.dataset.action = match[1]; return button;
   });
   document.querySelectorAll = selector => selector === '[data-setting]' ? all.filter(node => node.dataset.setting) : selector === '[data-action]' ? actions : selector === '.kick-button' ? all.filter(node => node.className.split(' ').includes('kick-button')) : [];
-  const context = vm.createContext({ document, WebSocket: Socket,
+  const viewport = { height: 780, offsetTop: 0, scale: 1, events: {}, addEventListener(name, fn) { (this.events[name] ||= []).push(fn); } };
+  const scrolls = [];
+  const context = vm.createContext({ document, WebSocket: Socket, visualViewport: viewport,
+    scrollTo(...args) { scrolls.push(args); },
     location: { protocol: 'http:', host: 'localhost:3001', port: '3001' },
     sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
     fetch: () => Promise.resolve({ json: () => Promise.resolve({ addresses: [] }) }),
@@ -105,7 +108,7 @@ function browserFixture(width = 1200) {
   const players = [0, 1, 2].map(i => ({ id: String(i), name: `玩家${i}`, team: i % 2 ? 'blue' : 'red', connected: true, ready: true, rank: null,
     game: snapshotGame(createGame(42)) }));
   const room = { code: 'ABCD', hostId: '0', roundId: 1, effects: [], status: 'lobby', settings: { ...Rules.defaults }, players, events: [], serverNow: Date.now() };
-  return { nodes, ws, room, actions, audioEvents, timers: timerCallbacks, windowEvents, body: document.body, receive: () => ws.receive({ type: 'state', room }) };
+  return { nodes, ws, room, actions, audioEvents, viewport, scrolls, document, context, timers: timerCallbacks, windowEvents, body: document.body, receive: () => ws.receive({ type: 'state', room }) };
 }
 
 test('viewport lock is scoped to waiting room and released on match or leave', () => {
@@ -118,6 +121,46 @@ test('viewport lock is scoped to waiting room and released on match or leave', (
   assert.equal(body.classes.has('waiting-visible'), true);
   ws.receive({ type: 'left' });
   assert.equal(body.classes.has('waiting-visible'), false);
+});
+
+test('mobile waiting room tracks visible viewport and resets scroll only on entry', () => {
+  const { room, receive, nodes, viewport, scrolls, document, ws } = browserFixture(390);
+  let blurs = 0;
+  document.activeElement = { blur() { blurs++; } };
+  receive();
+  const style = nodes.get('roomView').style.values;
+  assert.equal(style['--room-viewport-height'], '780px');
+  assert.equal(style['--room-viewport-top'], '0px');
+  assert.deepEqual(scrolls, [[0, 0]]);
+  assert.equal(blurs, 1);
+  receive();
+  assert.equal(blurs, 1, 'snapshots never dismiss the chat keyboard');
+  viewport.height = 430; viewport.offsetTop = 42;
+  viewport.events.resize.forEach(fn => fn());
+  assert.equal(style['--room-viewport-height'], '430px');
+  assert.equal(style['--room-viewport-top'], '42px');
+  viewport.height = 300; viewport.scale = 2;
+  viewport.events.resize.forEach(fn => fn());
+  assert.equal(style['--room-viewport-height'], '430px');
+  viewport.scale = 1; viewport.height = 844; viewport.offsetTop = 0;
+  viewport.events.resize.forEach(fn => fn());
+  assert.equal(style['--room-viewport-height'], '844px');
+  assert.equal(style['--room-viewport-top'], '0px');
+  room.status = 'playing'; receive();
+  assert.equal(style['--room-viewport-height'], undefined);
+  room.status = 'lobby'; receive();
+  ws.receive({ type: 'left' });
+  assert.equal(style['--room-viewport-height'], undefined);
+});
+
+test('waiting viewport falls back without VisualViewport and leaves desktop layout alone', () => {
+  const mobile = browserFixture(375);
+  mobile.context.visualViewport = undefined;
+  mobile.receive();
+  assert.equal(mobile.nodes.get('roomView').style.values['--room-viewport-height'], '900px');
+  const desktop = browserFixture(1440); desktop.receive();
+  assert.equal(desktop.nodes.get('roomView').style.values['--room-viewport-height'], undefined);
+  assert.equal(desktop.scrolls.length, 0);
 });
 
 test('real client scripts render every mode and attack configuration without runtime errors', () => {
@@ -704,16 +747,15 @@ test('nickname input limits twelve characters, respects composition and trims on
   assert.equal(ws.sent.at(-1).name, '长'.repeat(12));
 });
 
-test('leaderboard displays fixed top-three places, escaped names and remaining ranks', () => {
+test('leaderboard displays only fixed top-three places and escaped names', () => {
   const { nodes, ws } = browserFixture();
   const entries = Array.from({ length: 5 }, (_, i) => ({ name: i === 0 ? '<img>' : `玩家${i}`, score: 1000 - i, mode: 'survival', rank: i + 1, at: i }));
   ws.receive({ type: 'leaderboardList', entries, storage: 'saved', available: true });
   const podium = nodes.get('leaderboardPodium');
   assert.equal(podium.children.length, 3);
   assert.equal(podium.children[0].children[1].textContent, '<img>');
-  assert.equal(nodes.get('leaderboardList').children.length, 2);
+  assert.equal(nodes.has('leaderboardList'), false);
   assert.equal(nodes.get('leaderboardStatus').textContent, '');
-  assert.equal(nodes.get('leaderboardList').children[0].children[0].textContent, '04');
   ws.receive({ type: 'leaderboardList', entries: entries.slice(0, 1), storage: 'saved', available: true });
   assert.equal(podium.children[1].children[1].textContent, '等你上榜');
   ws.receive({ type: 'leaderboardList', entries: [], storage: 'error', available: false });
@@ -732,11 +774,11 @@ test('leaderboard mode selector shows independent podiums, empty modes and live 
     select.value = mode;
     select.fire('change');
     assert.deepEqual(nodes.get('leaderboardPodium').children.map(node => node.children[1].textContent), [0, 1, 2].map(i => `${mode}${i}`));
-    assert.equal(nodes.get('leaderboardList').children[0].children[1].textContent, `${mode}3`);
+    assert.ok(nodes.get('leaderboardPodium').children.every(node => node.children[1].textContent !== `${mode}3`));
   }
   select.value = 'coop'; select.fire('change');
   assert.ok(nodes.get('leaderboardPodium').children.every(node => node.children[1].textContent === '等你上榜'));
-  assert.equal(nodes.get('leaderboardList').children.length, 0);
+  assert.equal(nodes.has('leaderboardList'), false);
   assert.equal(nodes.get('leaderboardStatus').textContent, '');
   ws.receive({ type: 'leaderboardList', entries: [...entries, { name: '守城冠军', mode: 'coop', score: 10, at: 1, rank: 1 }], storage: 'saved', available: true });
   assert.equal(select.value, 'coop');

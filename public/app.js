@@ -50,14 +50,6 @@ function renderLeaderboard() {
       element('small', 'podium-mode', entry ? Rules.modes[entry.mode]?.[0] || '游戏纪录' : '尚无纪录'));
     return place;
   }));
-  $('leaderboardList').replaceChildren(...entries.slice(3).map((entry, index) => {
-    const row = element('li', 'leaderboard-row');
-    row.append(element('span', 'leaderboard-rank', String(index + 4).padStart(2, '0')),
-      element('span', 'leaderboard-name', entry.name),
-      element('small', 'leaderboard-mode', Rules.modes[entry.mode]?.[0] || '游戏纪录'),
-      element('strong', 'leaderboard-score', entry.score.toLocaleString()));
-    return row;
-  }));
   text('leaderboardStatus', !state.connected ? '连接中断，重连后更新榜单。' : !leaderboardLoaded ? '正在获取最高分…' :
     leaderboardStorage === 'error' ? '榜单存储异常，成绩可能尚未保存，请联系房主检查服务日志。' :
     !entries.length ? '' :
@@ -417,6 +409,31 @@ function connect() {
   ws.addEventListener('error', () => {});
 }
 
+let waitingViewportActive = false;
+function syncWaitingViewport() {
+  const view = $('roomView');
+  if (!waitingViewportActive || window.innerWidth > 760) {
+    view.style.removeProperty('--room-viewport-height');
+    view.style.removeProperty('--room-viewport-top');
+    return;
+  }
+  const viewport = window.visualViewport;
+  // Pinch zoom must not resize the layout beneath the user's magnified view.
+  if (viewport && Math.abs(viewport.scale - 1) > .01) return;
+  const height = viewport?.height || window.innerHeight;
+  if (height > 0) view.style.setProperty('--room-viewport-height', `${height}px`);
+  view.style.setProperty('--room-viewport-top', `${Math.max(0, viewport?.offsetTop || 0)}px`);
+}
+function setWaitingViewport(active) {
+  if (active === waitingViewportActive) return;
+  waitingViewportActive = active;
+  if (active && window.innerWidth <= 760) {
+    document.activeElement?.blur?.();
+    window.scrollTo?.(0, 0);
+  }
+  syncWaitingViewport();
+}
+
 function resetRoom() {
   resetReserve();
   clearIncoming();
@@ -435,6 +452,7 @@ function resetRoom() {
   document.body.classList.remove('controls-visible');
   document.body.classList.remove('match-visible');
   document.body.classList.remove('waiting-visible');
+  setWaitingViewport(false);
   state.id = null;
   state.lastEvent = 0;
   monitors.clear();
@@ -476,6 +494,7 @@ function render() {
   show($('roomView'), true);
   const waiting = room.status === 'lobby';
   document.body.classList.toggle('waiting-visible', waiting);
+  setWaitingViewport(waiting);
   if (!waiting) closeRuleOptions();
   show($('waitingPanel'), waiting);
   show($('gamePanel'), !waiting);
@@ -1179,6 +1198,10 @@ $('roomFinder').addEventListener('click', event => {
   if (event.target === $('roomFinder') && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) closeRoomFinder();
 });
 window.addEventListener('resize', alignChatHeight);
+window.addEventListener('resize', syncWaitingViewport);
+window.addEventListener('orientationchange', syncWaitingViewport);
+window.visualViewport?.addEventListener('resize', syncWaitingViewport);
+window.visualViewport?.addEventListener('scroll', syncWaitingViewport);
 if (window.ResizeObserver) new ResizeObserver(alignChatHeight).observe($('waitingPanel'));
 $('roomSearchInput').addEventListener('input', renderDirectory);
 $('refreshRoomsButton').addEventListener('click', () => {

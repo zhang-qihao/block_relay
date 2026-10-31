@@ -18,6 +18,9 @@ test('waiting room is viewport bounded and detailed guidance lives only in the o
   const css = publicFile('styles.css').toString();
   assert.match(css, /body\.waiting-visible \{ height: 100dvh; overflow: hidden;/);
   assert.match(css, /\.waiting-visible \.room-view \{[^}]*grid-template-rows: auto minmax\(0, 1fr\)/);
+  assert.match(css, /\.waiting-visible \.room-view \{ position: fixed; top: var\(--room-viewport-top, 0px\)/);
+  assert.match(css, /height: var\(--room-viewport-height, 100dvh\)/);
+  assert.match(css, /env\(safe-area-inset-top, 0px\)/);
   assert.match(css, /\.waiting-visible \.waiting-intro \{[^}]*overflow-y: auto/);
 });
 
@@ -54,7 +57,7 @@ test('touch controls use the requested fixed two-row order', () => {
 test('homepage version matches package and lockfile versions', () => {
   const pkg = require('../package.json');
   const lock = require('../package-lock.json');
-  assert.equal(pkg.version, '0.2.0');
+  assert.equal(pkg.version, '0.2.1');
   assert.equal(lock.version, pkg.version);
   assert.equal(lock.packages[''].version, pkg.version);
   assert.ok(publicFile('index.html').toString().includes(`aria-label="当前版本 v${pkg.version}">v${pkg.version}</span>`));
@@ -69,7 +72,8 @@ test('home keeps one set of controls in introduction, ranking, room reading orde
   for (const id of ['nameInput', 'createButton', 'roomInput', 'findRoomsButton', 'joinButton', 'refreshLeaderboardButton']) {
     assert.ok(ids.includes(id), `missing ${id}`);
   }
-  assert.match(html, /class="leaderboard-scroll" tabindex="0" role="region"/);
+  assert.match(html, /class="leaderboard-content"/);
+  assert.doesNotMatch(html, /id="leaderboardList"|可滚动查看/);
   assert.match(html, /rel="icon" type="image\/png" sizes="64x64" href="\/favicon.png"/);
 });
 
@@ -77,7 +81,7 @@ test('home grid retains two equal left panels and a spanning right panel', () =>
   const css = publicFile('styles.css').toString();
   assert.match(css, /grid-template-areas: "intro room" "ranking room"/);
   assert.match(css, /grid-template-areas: "intro" "ranking" "room"/);
-  assert.match(css, /\.leaderboard-scroll \{[^}]*overflow-y: auto/);
+  assert.doesNotMatch(css, /\.leaderboard-content \{[^}]*overflow-y: auto/);
 });
 
 test('select arrows share a centered icon and podiums have breathing room above', () => {
@@ -88,10 +92,8 @@ test('select arrows share a centered icon and podiums have breathing room above'
   assert.match(select, /padding-right: 40px/);
   assert.match(select, /background-position: right 14px center/);
   assert.match(select, /background-size: 16px 16px/);
-  assert.match(css, /\.leaderboard-scroll \{[^}]*display: flex; flex-direction: column/);
-  assert.match(css, /\.leaderboard-scroll > ol \{ flex-shrink: 0;/);
-  assert.match(css, /\.leaderboard-scroll > \.leaderboard-podium \{ margin-top: auto;/);
-  assert.match(css, /\.leaderboard-scroll > \.leaderboard-list \{ margin-bottom: auto;/);
+  assert.match(css, /\.leaderboard-content \{[^}]*justify-content: center/);
+  assert.match(css, /\.leaderboard-content > ol \{ flex-shrink: 0;/);
   assert.match(css, /#leaderboardStatus:empty \{ display: none;/);
 });
 
