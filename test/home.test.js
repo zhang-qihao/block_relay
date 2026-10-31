@@ -41,10 +41,20 @@ test('bomb transfer control stays below board in touch controls without shifting
   assert.doesNotMatch(script, /element\('option', '', '自定义'\)/);
 });
 
+test('touch controls use the requested fixed two-row order', () => {
+  const html = publicFile('index.html').toString();
+  const controls = html.match(/<div class="touch-controls"[^>]*>([\s\S]*?)<\/div>/)[1];
+  const labels = [...controls.matchAll(/<button\b[^>]*>([^<]+)<\/button>/g)].map(match => match[1]);
+  assert.deepEqual(labels, ['传递', '净化 0/6', '↻', '↓', '暂存', '硬降', '←', '→']);
+  assert.equal((html.match(/id="passBombButton"/g) || []).length, 1);
+  const css = publicFile('styles.css').toString();
+  assert.doesNotMatch(css, /\.touch-controls #cleanseButton \{ grid-column: span 2/);
+});
+
 test('homepage version matches package and lockfile versions', () => {
   const pkg = require('../package.json');
   const lock = require('../package-lock.json');
-  assert.equal(pkg.version, '0.1.2');
+  assert.equal(pkg.version, '0.2.0');
   assert.equal(lock.version, pkg.version);
   assert.equal(lock.packages[''].version, pkg.version);
   assert.ok(publicFile('index.html').toString().includes(`aria-label="当前版本 v${pkg.version}">v${pkg.version}</span>`));

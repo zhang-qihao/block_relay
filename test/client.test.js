@@ -31,7 +31,7 @@ function browserFixture(width = 1200) {
     append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } }
     replaceChildren(...children) { this.children = []; this.append(...children); }
     addEventListener(name, callback) { (this.events[name] ||= []).push(callback); }
-    fire(name, extra = {}) { for (const fn of this.events[name] || []) fn({ target: this, preventDefault() {}, ...extra }); }
+    fire(name, extra = {}) { for (const fn of this.events[name] || []) fn({ target: this, preventDefault() {}, stopPropagation() {}, ...extra }); }
     setAttribute(name, value) { this.attributes[name] = value; }
     getContext() { return drawing; }
     getBoundingClientRect() { return { left: 100, top: 100, right: 200, bottom: 300, width: 100, height: 200 }; }
@@ -76,13 +76,14 @@ function browserFixture(width = 1200) {
     send(message) { this.sent.push(JSON.parse(message)); }
     receive(message) { this.fire('message', { data: JSON.stringify(message) }); }
   }
+  const audioEvents = [];
   const timerCallbacks = new Map();
   let timerId = 0;
   const windowEvents = {};
   const actions = [...html.matchAll(/<button\s+data-action="([^"]+)"/g)].map(match => {
     const button = new Node('button'); button.dataset.action = match[1]; return button;
   });
-  document.querySelectorAll = selector => selector === '[data-setting]' ? all.filter(node => node.dataset.setting) : selector === '[data-action]' ? actions : [];
+  document.querySelectorAll = selector => selector === '[data-setting]' ? all.filter(node => node.dataset.setting) : selector === '[data-action]' ? actions : selector === '.kick-button' ? all.filter(node => node.className.split(' ').includes('kick-button')) : [];
   const context = vm.createContext({ document, WebSocket: Socket,
     location: { protocol: 'http:', host: 'localhost:3001', port: '3001' },
     sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
@@ -91,18 +92,20 @@ function browserFixture(width = 1200) {
     setTimeout(fn) { const id = ++timerId; timerCallbacks.set(id, fn); return id; },
     clearTimeout(id) { timerCallbacks.delete(id); }, clearInterval(id) { timerCallbacks.delete(id); }, Date, console,
     addEventListener(name, fn) { (windowEvents[name] ||= []).push(fn); }, devicePixelRatio: 1, innerWidth: width, innerHeight: 900,
+    confirm: () => true,
     matchMedia: () => ({ matches: false, addEventListener() {} }),
     requestAnimationFrame() { return 1; }, cancelAnimationFrame() {}, performance: { now: () => 1000 },
   });
   context.window = context;
   for (const file of ['rules.js', 'audio.js', 'effects.js', 'app.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '../public', file), 'utf8'), context, { filename: file });
+  vm.runInContext('audio.play = kind => audioEvents.push(kind)', Object.assign(context, { audioEvents }));
   const ws = sockets[0];
   ws.fire('open');
   ws.receive({ type: 'joined', id: '0', token: 'test' });
   const players = [0, 1, 2].map(i => ({ id: String(i), name: `玩家${i}`, team: i % 2 ? 'blue' : 'red', connected: true, ready: true, rank: null,
     game: snapshotGame(createGame(42)) }));
   const room = { code: 'ABCD', hostId: '0', roundId: 1, effects: [], status: 'lobby', settings: { ...Rules.defaults }, players, events: [], serverNow: Date.now() };
-  return { nodes, ws, room, actions, timers: timerCallbacks, windowEvents, body: document.body, receive: () => ws.receive({ type: 'state', room }) };
+  return { nodes, ws, room, actions, audioEvents, timers: timerCallbacks, windowEvents, body: document.body, receive: () => ws.receive({ type: 'state', room }) };
 }
 
 test('viewport lock is scoped to waiting room and released on match or leave', () => {
@@ -159,6 +162,21 @@ test('client settings, team and cleanse controls send authoritative protocol act
   assert.equal(nodes.get('cleanseButton').disabled, true);
 });
 
+test('cleanse button displays live energy and queued or disabled state', () => {
+  const { room, receive, nodes } = browserFixture();
+  room.status = 'playing';
+  for (const energy of [0, 3, 6, 12]) {
+    room.players[0].game.energy = energy;
+    receive();
+    assert.equal(nodes.get('cleanseButton').textContent, `净化 ${energy}/6`);
+    assert.equal(nodes.get('cleanseButton').disabled, energy < 6);
+  }
+  room.players[0].game.cleanseQueued = true; receive();
+  assert.equal(nodes.get('cleanseButton').textContent, '已预约 12/6');
+  room.settings.cleanse = false; receive();
+  assert.equal(nodes.get('cleanseButton').textContent, '净化已关闭');
+});
+
 test('countdown shows actual mode, goal, attack and enabled defenses', () => {
   const { room, receive, nodes } = browserFixture();
   room.status = 'countdown';
@@ -208,8 +226,7 @@ test('incoming attack shows source name independently of canvas and retains rece
   const attack = { id: 1, at: Date.now(), sourceId: '1', sourceName: '阿岚', rows: [], targets: [{ targetId: '0', lines: 3 }] };
   room.effects = [attack];
   receive();
-  assert.equal(nodes.get('incomingToast').classes.has('is-hidden'), false);
-  assert.equal(nodes.get('incomingToastText').textContent, '阿岚 攻击你 +3 行');
+  assert.equal(nodes.has('incomingToast'), false);
   assert.match(nodes.get('incomingNotice').children[0].textContent, /阿岚/);
   receive();
   assert.equal(nodes.get('incomingNotice').children.length, 1);
@@ -222,22 +239,20 @@ test('incoming attack shows source name independently of canvas and retains rece
   assert.equal(nodes.get('incomingNotice').classes.has('is-hidden'), true);
 });
 
-test('actual insertion shows hit overlay and actual attacker after the earlier warning', () => {
+test('actual insertion retains attacker below board without a blocking popup', () => {
   const { room, receive, nodes } = browserFixture();
   room.status = 'playing';
   receive();
   room.effects = [{ id: 1, kind: 'clear', at: Date.now(), sourceId: '1', sourceName: '阿岚', rows: [],
     targets: [{ targetId: '0', lines: 4 }] }];
   receive();
-  assert.match(nodes.get('incomingToastTitle').textContent, /尚未入盘/);
+  assert.match(nodes.get('incomingNotice').children[0].textContent, /来袭/);
   room.effects = [{ id: 2, kind: 'hit', at: Date.now(), targetId: '0', lines: 3,
     sources: [{ sourceId: '1', sourceName: '阿岚', lines: 3 }] }];
   room.players[0].game.received = 3;
   receive();
-  assert.equal(nodes.get('hitOverlay').classes.has('is-hidden'), false);
-  assert.match(nodes.get('hitOverlay').textContent, /阿岚/);
-  assert.match(nodes.get('hitOverlay').textContent, /命中 \+3 行/);
-  assert.match(nodes.get('incomingToastTitle').textContent, /实际受击/);
+  assert.equal(nodes.has('hitOverlay'), false);
+  assert.match(nodes.get('incomingNotice').children[0].textContent, /阿岚/);
   assert.match(nodes.get('incomingNotice').children[0].textContent, /已入盘/);
 });
 
@@ -600,6 +615,69 @@ test('bomb controls follow holder, clear quota and connection while mini boards 
   assert.equal(nodes.get('passBombButton').disabled, true);
   room.status = 'lobby'; room.bomb = null; receive();
   assert.equal(nodes.get('bombPanel').classes.has('is-hidden'), true);
+});
+
+test('new remote chat beeps once, history and own echoes stay silent', () => {
+  const { room, receive, ws, audioEvents } = browserFixture(); receive();
+  const message = { id: 1, at: Date.now(), sourceId: '1', name: '朋友', text: '你好' };
+  ws.receive({ type: 'chatHistory', code: room.code, messages: [message] });
+  assert.deepEqual(audioEvents, []);
+  ws.receive({ type: 'chatMessage', code: room.code, message: { ...message, id: 2 } });
+  ws.receive({ type: 'chatMessage', code: room.code, message: { ...message, id: 2 } });
+  ws.receive({ type: 'chatMessage', code: room.code, message: { ...message, id: 3, sourceId: '0' } });
+  assert.deepEqual(audioEvents, ['message']);
+});
+
+test('bomb ticks only on new local flash pulses and stops after passing', () => {
+  const { room, receive, audioEvents } = browserFixture();
+  room.status = 'playing'; room.settings.hotPotato = true;
+  room.bomb = { holderId: '0', cleared: 0, lit: false }; receive();
+  room.bomb.lit = true; receive(); receive();
+  assert.equal(audioEvents.filter(kind => kind === 'bombTick').length, 1);
+  room.bomb.lit = false; receive(); room.bomb.lit = true; receive();
+  assert.equal(audioEvents.filter(kind => kind === 'bombTick').length, 2);
+  room.bomb.holderId = '1'; receive(); room.bomb.lit = false; receive(); room.bomb.lit = true; receive();
+  assert.equal(audioEvents.filter(kind => kind === 'bombTick').length, 2);
+});
+
+test('inline kick buttons are host-only in lobby and match without intercepting board controls', () => {
+  const { room, receive, nodes, ws } = browserFixture(); receive();
+  assert.equal(nodes.has('managePlayersButton'), false);
+  assert.equal(nodes.has('managePlayersDialog'), false);
+  const roster = nodes.get('waitingRoster').children;
+  assert.equal(roster[0].querySelector('.kick-button'), null);
+  roster[1].querySelector('.kick-button').fire('click');
+  assert.equal(ws.sent.at(-1).type, 'kick');
+  assert.equal(ws.sent.at(-1).id, '1');
+  room.status = 'playing'; receive();
+  const card = nodes.get('playerMonitors').children[1];
+  assert.equal(card.tagName, 'DIV');
+  let stopped = false;
+  card.querySelector('.kick-button').fire('click', { stopPropagation() { stopped = true; } });
+  assert.equal(stopped, true);
+  assert.equal(ws.sent.at(-1).type, 'kick');
+  room.hostId = '1'; receive();
+  assert.equal(card.querySelector('.kick-button').classes.has('is-hidden'), true);
+  const before = ws.sent.length;
+  card.querySelector('.kick-button').fire('click');
+  assert.equal(ws.sent.length, before);
+  ws.receive({ type: 'kicked', message: '你已被房主移出房间。' });
+  assert.equal(nodes.get('lobbyView').classes.has('is-hidden'), false);
+  assert.match(nodes.get('lobbyMessage').textContent, /移出/);
+});
+
+test('host can add difficulty-selected bots while guests cannot', () => {
+  const { room, receive, nodes, ws } = browserFixture(); receive();
+  assert.equal(nodes.get('botControls').classes.has('is-hidden'), false);
+  nodes.get('botLevelSelect').value = 'hard';
+  nodes.get('addBotButton').fire('click');
+  assert.equal(ws.sent.at(-1).type, 'addBot');
+  assert.equal(ws.sent.at(-1).level, 'hard');
+  room.hostId = '1'; receive();
+  assert.equal(nodes.get('botControls').classes.has('is-hidden'), true);
+  const before = ws.sent.length;
+  nodes.get('addBotButton').fire('click');
+  assert.equal(ws.sent.length, before);
 });
 
 test('nickname input limits twelve characters, respects composition and trims on blur and join', () => {

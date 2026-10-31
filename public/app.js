@@ -114,6 +114,7 @@ function receiveChat(messages, history = false) {
   for (const item of messages) {
     if (chatItems.some(existing => existing.id === item.id)) continue;
     chatItems.push(item);
+    if (!history && item.sourceId !== state.id) audio.play('message');
     const row = element('div', `chat-message${item.sourceId === state.id ? ' is-own' : ''}`);
     const meta = element('div', 'chat-meta');
     meta.append(element('strong', 'chat-name', item.name + (item.sourceId === state.id ? '（你）' : '')),
@@ -179,7 +180,6 @@ const monitors = new Map();
 let countdownAnimation = null;
 let countdownKey = null;
 let incomingAttacks = [];
-let incomingTimer;
 let reserveKey = null;
 let reservePending = null;
 let reserveCancelled = 0;
@@ -228,22 +228,15 @@ function renderReserve(game) {
 }
 function clearIncoming() {
   incomingAttacks = [];
-  clearTimeout(incomingTimer);
-  show($('incomingToast'), false);
   show($('incomingNotice'), false);
-  show($('hitOverlay'), false);
 }
 function receiveAttack(attack) {
   const landed = attack.phase === 'hit';
   incomingAttacks.unshift(attack);
   incomingAttacks = incomingAttacks.slice(0, 4);
-  text('incomingToastTitle', landed ? '障碍已入盘 · 实际受击' : '攻击来袭 · 尚未入盘');
-  text('incomingToastText', landed ? `${attack.sourceName} 命中你 +${attack.lines} 行` : `${attack.sourceName} 攻击你 +${attack.lines} 行`);
-  text('incomingToastHint', landed ? '新增障碍行已高亮；补齐缺口或用净化清除' : '缓冲结束后在方块落地时加入，现在仍可抵消');
   $('incomingNotice').replaceChildren(...incomingAttacks.map(item =>
     element('p', '', `${item.phase === 'hit' ? '已入盘' : '来袭'} · ${item.sourceName} → 你：+${item.lines} 行`)));
   show($('incomingNotice'), true);
-  show($('incomingToast'), true);
   const frame = $('mainBoard').parentElement;
   frame.animate?.([
     { boxShadow: '0 0 0 4px #ff6488, 0 0 52px #ff6488aa' },
@@ -253,14 +246,7 @@ function receiveAttack(attack) {
   sourceCard?.animate?.([
     { outline: '3px solid #ed8198' }, { outline: '0px solid transparent' },
   ], { duration: 1600, easing: 'ease-out' });
-  const hitOverlay = $('hitOverlay');
-  if (landed) {
-    text('hitOverlay', `${attack.sourceName}\n命中 +${attack.lines} 行`);
-    show(hitOverlay, true);
-    hitOverlay.animate?.([{ opacity: 1 }, { opacity: 0 }], { duration: 850, easing: 'ease-in', fill: 'forwards' });
-  }
-  clearTimeout(incomingTimer);
-  incomingTimer = setTimeout(() => { show($('incomingToast'), false); show(hitOverlay, false); }, 3500);
+
 }
 function receiveHit(hit) {
   audio.play('hit', hit.lines);
@@ -377,6 +363,10 @@ function connect() {
       }
     } else if (data.type === 'chatMessage') {
       if (state.room?.code === data.code) receiveChat([data.message]);
+    } else if (data.type === 'kicked') {
+      saved('block-relay-token', null);
+      resetRoom();
+      message(data.message);
     } else if (data.type === 'chatError') {
       if (!data.code || state.room?.code === data.code) {
         pendingChat = null;
@@ -401,6 +391,8 @@ function connect() {
   });
   ws.addEventListener('close', () => {
     state.connected = false;
+    $('addBotButton').disabled = true;
+    updateKickButtons();
     renderRuleOptions();
     renderBomb();
     pendingChat = null;
@@ -628,15 +620,44 @@ function renderSettings(self) {
   renderRuleOptions();
 }
 
+function kickButton(player) {
+  const button = element('button', 'text-button kick-button', '踢出');
+  button.type = 'button';
+  button.setAttribute('aria-label', `踢出 ${player.name}`);
+  button.addEventListener('pointerdown', event => event.stopPropagation());
+  button.addEventListener('click', event => {
+    event.stopPropagation();
+    if (!state.connected || state.room?.hostId !== state.id || player.id === state.id) return;
+    if (window.confirm(`确定将「${player.name}」踢出房间？`)) send({ type: 'kick', id: player.id });
+  });
+  return button;
+}
+function updateKickButtons() {
+  const host = state.room?.hostId === state.id;
+  for (const button of document.querySelectorAll('.kick-button')) {
+    show(button, Boolean(host));
+    button.disabled = !state.connected;
+  }
+}
+
 function renderWaiting(self) {
   const room = state.room;
+  show($('botControls'), room.hostId === self.id);
+  $('addBotButton').disabled = !state.connected || room.players.length >= 6;
   const nodes = room.players.map((player, index) => {
     const row = element('div', 'roster-row');
     const avatar = element('span', 'player-avatar', player.name.slice(0, 1));
     avatar.dataset.color = index % 6;
     const details = element('div', 'roster-details');
-    details.append(element('strong', '', player.name + (player.id === self.id ? '（你）' : '')));
-    details.append(element('span', '', (player.id === room.hostId ? '房主' : '挑战者') +
+    const nameRow = element('div', 'player-name-row');
+    nameRow.append(element('strong', '', player.name + (player.id === self.id ? '（你）' : '')));
+    if (room.hostId === self.id && player.id !== self.id) {
+      const kick = kickButton(player);
+      kick.disabled = !state.connected;
+      nameRow.append(kick);
+    }
+    details.append(nameRow);
+    details.append(element('span', '', (player.bot ? '机器人 · 自动准备' : player.id === room.hostId ? '房主' : '挑战者') +
       (room.settings.mode === 'teams' ? ` / ${player.team === 'red' ? '红队' : '蓝队'}` : '')));
     const status = element('span', `ready-tag ${player.ready && player.connected ? 'is-ready' : ''}`,
       !player.connected ? '等待重连' : player.ready ? '已准备' : '未准备');
@@ -742,6 +763,8 @@ function decorateBomb(badge) {
   return badge;
 }
 
+let bombTickLit = false;
+let bombTickHolder = null;
 function renderBomb() {
   const bomb = state.room?.bomb;
   const enabled = state.room?.settings.hotPotato && state.room.status === 'playing';
@@ -751,6 +774,9 @@ function renderBomb() {
   show($('bombPanel'), enabled);
   show($('mainBombBadge'), Boolean(own));
   const lit = Boolean(state.connected && bomb?.lit);
+  if (own && lit && !bombTickLit && bombTickHolder === state.id) audio.play('bombTick');
+  bombTickLit = Boolean(own && lit);
+  bombTickHolder = own && state.connected ? state.id : null;
   $('mainBombBadge').classList.toggle('is-lit', Boolean(own && lit));
   $('mainBombBadge').querySelector('.bomb-caption').textContent = own ? `[${bomb.cleared >= 1 ? 1 : 0}/1]按B传递！` : '';
   $('mainBoard').parentElement.classList.toggle('has-bomb', Boolean(own));
@@ -792,7 +818,7 @@ function renderGame(self) {
   const target = targets.find(player => player.id === self.targetId) || (isManual() ? Rules.previousOpponent(room.players, self.id, room.settings) : null);
   text('targetName', room.settings.mode === 'coop' ? '自动救援队友' : !Rules.hostile(room.settings) ? '无攻击' : isManual() ? target?.name || '暂无目标' : Rules.attacks[room.settings.attack][0]);
   text('energyValue', room.settings.cleanse ? `${game.energy} / 12` : '已关闭');
-  text('cleanseButton', game.cleanseQueued ? '已预约 · 下次落地' : '净化（V · 6 点）');
+  text('cleanseButton', !room.settings.cleanse ? '净化已关闭' : `${game.cleanseQueued ? '已预约' : '净化'} ${game.energy}/6`);
   $('cleanseButton').disabled = !activeGame() || !room.settings.cleanse || game.energy < 6 || game.cleanseQueued;
   text('defenseStats', `挖掘 ${game.dug} · 抵消 ${game.cancelled} · 净化 ${game.purified}${room.settings.mode === 'coop' ? ` · 救援 ${game.helped || 0}` : ''}`);
   text('matchRulesLabel', `${Rules.presets[room.presetId]?.name || Rules.modes[room.settings.mode][0]} / ${room.settings.mode === 'coop' ? '全员合作' : !Rules.hostile(room.settings) ? '无攻击' : Rules.attacks[room.settings.attack][0]}`);
@@ -820,11 +846,11 @@ function renderMonitors(self, target) {
   room.players.forEach((player, index) => {
     let node = monitors.get(player.id);
     if (!node) {
-      node = element('button', 'monitor-card');
-      node.type = 'button';
+      node = element('div', 'monitor-card');
+      node.setAttribute('role', 'group');
       node.dataset.id = player.id;
       const heading = element('div', 'monitor-top');
-      heading.append(element('strong', 'monitor-name'), element('span', 'monitor-badge'));
+      heading.append(element('strong', 'monitor-name'), kickButton(player), element('span', 'monitor-badge'));
       const body = element('div', 'monitor-body');
       const canvas = element('canvas', 'mini-board');
       const detail = element('div', 'monitor-detail');
@@ -843,6 +869,12 @@ function renderMonitors(self, target) {
         if (pointer && Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 8) pointer.cancelled = true;
       });
       node.addEventListener('pointercancel', () => { if (pointer) pointer.cancelled = true; });
+      canvas.addEventListener('keydown', event => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        if (canSpectatorTap() && player.id !== state.id && state.room.players.find(other => other.id === player.id)?.game?.alive) spectatorTap(player.id, .5, .5);
+        else if (activeGame() && isManual() && validOpponents().some(other => other.id === player.id)) send({ type: 'target', id: player.id });
+      });
       node.addEventListener('click', event => {
         if (canSpectatorTap() && state.room.players.find(other => other.id === player.id)?.game?.alive && player.id !== state.id) {
           if (event.detail === 0) { spectatorTap(player.id, .5, .5); return; }
@@ -865,11 +897,19 @@ function renderMonitors(self, target) {
     const tappable = canSpectatorTap() && !own && player.game?.alive;
     node.disabled = !tappable && (!activeGame() || !isManual() || own || teammate || !player.game?.alive);
     node.classList.toggle('is-tappable', Boolean(tappable));
+    const kick = node.querySelector('.kick-button');
+    show(kick, room.hostId === self.id && !own);
+    kick.disabled = !state.connected;
+    const canvas = node.querySelector('canvas');
+    canvas.tabIndex = node.disabled ? -1 : 0;
+    canvas.setAttribute('role', 'button');
+    canvas.setAttribute('aria-disabled', String(node.disabled));
+    canvas.setAttribute('aria-label', `${player.name}的棋盘`);
     node.dataset.team = room.settings.mode === 'teams' ? player.team : '';
     node.setAttribute('aria-pressed', String(selected));
     node.setAttribute('aria-label', tappable ? `${player.name}的棋盘，点击送出观战效果` : own ? `${player.name}，你的棋盘` : teammate ? `${player.name}，队友` : `${player.name}的棋盘${isManual() ? '，点击攻击' : ''}`);
     node.querySelector('.monitor-name').textContent = player.name;
-    node.querySelector('.monitor-badge').textContent = own ? '你' : teammate ? '队友' : room.bountyId === player.id ? '悬赏' : selected ? '目标 ⌖' : '';
+    node.querySelector('.monitor-badge').textContent = own ? '你' : player.bot ? '机器人' : teammate ? '队友' : room.bountyId === player.id ? '悬赏' : selected ? '目标 ⌖' : '';
     node.querySelector('.monitor-state').textContent = !player.connected ? '离线 · 可重连' : player.game?.alive ? '仍在场上' : `第 ${player.rank || '—'} 名`;
     node.querySelector('.monitor-lines').textContent = `${player.game?.lines || 0} 行`;
     node.querySelector('.monitor-score').textContent = `${(player.game?.score || 0).toLocaleString()} 分`;
@@ -1151,6 +1191,10 @@ $('roomInput').addEventListener('keydown', event => { if (event.key === 'Enter')
 $('leaveButton').addEventListener('click', () => {
   saved('block-relay-token', null);
   if (!send({ type: 'leave' })) resetRoom();
+});
+$('addBotButton').addEventListener('click', () => {
+  if (!state.connected || state.room?.hostId !== state.id || state.room.status !== 'lobby') return;
+  send({ type: 'addBot', level: $('botLevelSelect').value });
 });
 $('readyButton').addEventListener('click', () => send({ type: 'ready', ready: !me()?.ready }));
 $('startButton').addEventListener('click', () => send({ type: 'start' }));

@@ -138,6 +138,20 @@ for (const mode of ['mute', 'hidden', 'stop']) {
   });
 }
 
+for (const kind of ['message', 'bombTick']) {
+  test(`${kind} respects unlock, mute and background state`, () => {
+    const f = fixture();
+    f.audio.play(kind); assert.equal(f.created(), 0);
+    f.audio.unlock(); f.audio.play(kind);
+    assert.equal(f.oscillators.length, kind === 'message' ? 2 : 1);
+    const count = f.oscillators.length;
+    f.audio.setEnabled(false); f.audio.play(kind);
+    assert.equal(f.oscillators.length, count);
+    f.audio.setEnabled(true); f.document.hidden = true; f.audio.play(kind);
+    assert.equal(f.oscillators.length, count);
+  });
+}
+
 test('audio handles unsupported, hidden pages and polyphony limits', () => {
   const unsupported = fixture(false);
   assert.doesNotThrow(() => { unsupported.audio.unlock(); unsupported.audio.play('hit'); });

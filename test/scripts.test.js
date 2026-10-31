@@ -25,7 +25,7 @@ async function unusedPort() {
 }
 function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'block relay scripts '));
-  for (const file of ['app.sh', 'update.sh', 'server.js', 'bomb.js', 'leaderboard.js', 'game.js', 'match.js', 'package.json', '.gitignore']) {
+  for (const file of ['app.sh', 'update.sh', 'server.js', 'bot.js', 'bomb.js', 'leaderboard.js', 'game.js', 'match.js', 'package.json', '.gitignore']) {
     fs.copyFileSync(path.join(root, file), path.join(dir, file));
   }
   fs.cpSync(path.join(root, 'public'), path.join(dir, 'public'), { recursive: true });

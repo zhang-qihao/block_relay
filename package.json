@@ -1,12 +1,12 @@
 {
   "name": "lan-tetris-battle",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "description": "局域网多人实时对战俄罗斯方块",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check bomb.js && node --check leaderboard.js && node --check game.js && node --check match.js && node --check server.js && node --check public/rules.js && node --check public/effects.js && node --check public/audio.js && node --check public/app.js",
+    "check": "node --check bot.js && node --check bomb.js && node --check leaderboard.js && node --check game.js && node --check match.js && node --check server.js && node --check public/rules.js && node --check public/effects.js && node --check public/audio.js && node --check public/app.js",
     "test": "node --test test/*.test.js",
     "test:browser": "node test/browser-smoke.js"
   },

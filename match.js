@@ -58,7 +58,7 @@ function startError(room) {
   const players = [...room.players.values()];
   const minimum = ['practice', 'dig', 'coop'].includes(room.settings.mode) ? 1 : 2;
   if (players.length < minimum) return `至少需要 ${minimum} 位玩家。`;
-  if (players.some(player => !player.ready || !player.ws)) return '请等待所有玩家连接并准备。';
+  if (players.some(player => !player.ready || (!player.ws && !player.bot))) return '请等待所有玩家连接并准备。';
   if (room.settings.mode === 'teams') {
     const red = players.filter(player => player.team === 'red').length;
     if (!red || red * 2 !== players.length) return '红蓝两队人数必须相等，支持 1v1、2v2、3v3。';
@@ -81,6 +81,7 @@ function beginMatch(room, seed, now, countdownMs) {
   room.nextWaveAt = room.settings.mode === 'coop' ? room.startsAt + 20000 : null;
   room.coopEndsAt = null;
   for (const player of room.participants) {
+    player.botState = null;
     player.game = createGame(seed, room.settings);
     player.rank = null;
     player.eliminatedOrder = null;

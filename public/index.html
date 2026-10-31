@@ -34,7 +34,7 @@
             <div class="room-entry-connection"><div class="signal-line"><span class="signal-dot"></span><span id="connectionLabel">正在连接房间服务…</span></div><p id="lanHint" class="lan-hint"></p></div>
           </section>
         </div>
-        <footer class="home-footer"><span>打开浏览器，朋友就在下一块。</span><span>一块接一块，一局又一局。 <span class="home-version" aria-label="当前版本 v0.1.2">v0.1.2</span></span></footer>
+        <footer class="home-footer"><span>打开浏览器，朋友就在下一块。</span><span>一块接一块，一局又一局。 <span class="home-version" aria-label="当前版本 v0.2.0">v0.2.0</span></span></footer>
       </section>
 
       <section id="roomView" class="view room-view is-hidden">
@@ -76,6 +76,7 @@
           </div>
           <div class="waiting-roster-wrap">
             <div class="section-caption"><span>房间玩家</span><span id="readyCountLabel">0 ready</span></div>
+            <div id="botControls" class="bot-controls is-hidden"><label class="sr-only" for="botLevelSelect">机器人难度</label><select id="botLevelSelect" class="text-input"><option value="easy">简单机器人</option><option value="normal" selected>普通机器人</option><option value="hard">困难机器人</option></select><button id="addBotButton" class="button button-secondary" type="button">添加机器人</button></div>
             <div id="waitingRoster" class="waiting-roster"></div>
             <label id="teamField" class="field-label is-hidden" for="teamSelect">我的队伍<select id="teamSelect" class="text-input"><option value="red">红队</option><option value="blue">蓝队</option></select></label>
             <button id="readyButton" class="button button-secondary" type="button">准备</button>
@@ -108,10 +109,10 @@
             </aside>
 
             <section class="board-stage">
-              <div class="board-frame"><canvas id="mainBoard" class="main-board" aria-label="你的俄罗斯方块棋盘"></canvas><span id="mainBombBadge" class="bomb-badge is-hidden" aria-hidden="true"></span><div id="hitOverlay" class="hit-overlay is-hidden" aria-hidden="true"></div><div id="boardOverlay" class="board-overlay is-hidden"><div id="overlayMessage"></div></div></div>
+              <div class="board-frame"><canvas id="mainBoard" class="main-board" aria-label="你的俄罗斯方块棋盘"></canvas><span id="mainBombBadge" class="bomb-badge is-hidden" aria-hidden="true"></span><div id="boardOverlay" class="board-overlay is-hidden"><div id="overlayMessage"></div></div></div>
               <div id="incomingNotice" class="incoming-notice is-hidden" role="status" aria-live="polite"></div>
               <div class="board-footer"><div class="control-legend"><span><span class="keycap">← →</span>移动</span><span><span class="keycap">↑</span>旋转</span><span><span class="keycap">SPACE</span>硬降</span></div><div id="dangerLabel" class="danger-label"></div></div>
-              <div id="mobileControls" class="mobile-controls"><div id="bombPanel" class="bomb-panel is-hidden"><div><strong id="bombHolderLabel"></strong><p id="bombProgress"></p></div><button id="passBombButton" class="button button-secondary" type="button" disabled>传递炸弹</button></div><div class="input-mode-row"><button id="inputModeButton" class="text-button" type="button" aria-pressed="false">切换手势</button><span id="inputModeHint">按住方向连续移动，可同时旋转</span></div><div class="touch-controls" aria-label="触控操作"><button data-action="left" type="button" aria-label="左移">←</button><button data-action="down" type="button" aria-label="软降">↓</button><button data-action="right" type="button" aria-label="右移">→</button><button data-action="rotate" type="button" aria-label="旋转">↻</button><button data-action="hold" type="button">暂存</button><button data-action="drop" type="button" class="touch-drop">硬降</button><button id="cleanseButton" class="cleanse-button" type="button">净化（V · 6 点）</button></div></div>
+              <div id="mobileControls" class="mobile-controls"><div id="bombPanel" class="bomb-panel is-hidden"><strong id="bombHolderLabel"></strong><p id="bombProgress"></p></div><div class="input-mode-row"><button id="inputModeButton" class="text-button" type="button" aria-pressed="false">切换手势</button><span id="inputModeHint">按住方向连续移动，可同时旋转</span></div><div class="touch-controls" aria-label="触控操作"><button id="passBombButton" type="button" aria-label="传递炸弹" disabled>传递</button><button id="cleanseButton" class="cleanse-button" type="button" title="净化：V 键，消耗 6 点能量">净化 0/6</button><button data-action="rotate" type="button" aria-label="旋转">↻</button><button data-action="down" type="button" aria-label="软降">↓</button><button data-action="hold" type="button">暂存</button><button data-action="drop" type="button" class="touch-drop">硬降</button><button data-action="left" type="button" aria-label="左移">←</button><button data-action="right" type="button" aria-label="右移">→</button></div></div>
             </section>
 
             <aside class="spectator-panel"><div class="spectator-heading"><div><p class="eyebrow">实时棋盘</p><h2>场上玩家</h2></div><span id="spectatorCount" class="spectator-count">0</span></div><div id="spectatorTools" class="spectator-tools is-hidden"><div id="spectatorEffectButtons" class="spectator-effect-buttons" role="group" aria-label="观战互动效果"></div><p id="spectatorHint" class="rule-description" role="status">选择效果，点击仍在场玩家的棋盘。不影响对局。</p></div><div id="playerMonitors" class="player-monitors"></div><div class="spectator-footer"><span class="live-ring"></span><span>实时同步中</span></div></aside>
@@ -146,7 +147,6 @@
         <p class="countdown-keys">← → 移动　↑ 旋转　空格硬降　C 暂存　V 净化</p>
       </div>
     </section>
-    <aside id="incomingToast" class="incoming-toast is-hidden" role="status" aria-live="polite"><span id="incomingToastTitle">攻击来袭</span><strong id="incomingToastText"></strong><small id="incomingToastHint">已进入待接收队列，仍可抵消或净化</small></aside>
     <canvas id="battleEffects" class="battle-effects" aria-hidden="true"></canvas>
     <script src="/rules.js" defer></script>
     <script src="/effects.js" defer></script>

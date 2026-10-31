@@ -10,6 +10,7 @@ const { act, tickGame, snapshotGame, enqueueGarbage } = require('./game');
 const Rules = require('./public/rules');
 const Match = require('./match');
 const Bomb = require('./bomb');
+const Bot = require('./bot');
 const { createLeaderboard } = require('./leaderboard');
 
 const MAX_PLAYERS = 6;
@@ -80,12 +81,12 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
     for (const ws of wss.clients) sendLeaderboard(ws, false, snapshot);
   }
   function recordScore(player) {
-    if (player.game) leaderboard.record(player.name, player.game.score, player.room.settings.mode);
+    if (player.game && !player.bot) leaderboard.record(player.name, player.game.score, player.room.settings.mode);
   }
   function directory() {
     const priority = { lobby: 0, countdown: 1, playing: 2, finished: 3 };
     return [...rooms.values()].map(room => {
-      const online = [...room.players.values()].filter(player => player.ws).length;
+      const online = [...room.players.values()].filter(player => player.ws || player.bot).length;
       return { code: room.code, hostName: room.players.get(room.hostId)?.name || '房主',
         mode: room.settings.mode, presetId: room.presetId, players: room.players.size,
         online, maxPlayers: MAX_PLAYERS, status: room.status,
@@ -125,7 +126,7 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
         deadline: room.deadline, nextEnvironmentAt: room.nextEnvironmentAt,
         bountyId: room.bountyId, nextBountyAt: room.nextBountyAt, outcome: room.outcome,
         players: [...room.players.values()].map(player => ({
-          id: player.id, name: player.name, connected: Boolean(player.ws),
+          id: player.id, name: player.name, connected: Boolean(player.ws || player.bot), bot: player.bot || null,
           ready: player.ready, targetId: player.targetId, rank: player.rank, team: player.team,
           targetChangedAt: player.targetChangedAt,
           game: player.game ? snapshotGame(player.game) : null,
@@ -157,6 +158,11 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
     }
   }
   function applyResult(room, player, result, now) {
+    if (player.bot && result.locked && player.botState) {
+      player.botState.actions = [];
+      player.botState.pieceReadyAt = now + Bot.levels[player.bot].pieceDelay;
+      player.botState.choice = randomInt(10000) / 10000;
+    }
     Bomb.credit(room, player, result.cleared);
     if (result.locked || !player.game?.alive) recordScore(player);
     if (result.changed) room.dirty = true;
@@ -187,7 +193,7 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
     if (allocation.length) event(room, `${player.name} 消 ${result.cleared} 行 → ${allocation.map(item => `${item.player.name} +${item.lines}`).join('、')}`, 'attack');
   }
   function invalidateReady(room) {
-    for (const player of room.players.values()) player.ready = false;
+    for (const player of room.players.values()) player.ready = Boolean(player.bot);
   }
   function clearMatch(room) {
     room.bomb = null;
@@ -206,7 +212,8 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
     room.coopEndsAt = null;
     for (const player of room.players.values()) {
       player.game = null;
-      player.ready = player.id === room.hostId;
+      player.ready = Boolean(player.bot) || player.id === room.hostId;
+      player.botState = null;
       player.rank = null;
       player.targetId = null;
       player.targetChangedAt = null;
@@ -221,9 +228,10 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
     room.players.delete(player.id);
     sessions.delete(player.token);
     if (room.hostId === player.id) {
-      room.hostId = [...room.players.values()].find(other => other.ws)?.id || room.players.keys().next().value;
+      const humans = [...room.players.values()].filter(other => !other.bot);
+      room.hostId = humans.find(other => other.ws)?.id || humans[0]?.id;
     }
-    if (!room.players.size) { rooms.delete(room.code); updateDirectory(); return; }
+    if (![...room.players.values()].some(other => !other.bot)) { rooms.delete(room.code); updateDirectory(); return; }
     event(room, `${player.name} 离开了房间。`);
     if (room.status === 'countdown') clearMatch(room);
     finishIfNeeded(room);
@@ -370,6 +378,27 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
           event(room, `${player.name} 加入${player.team === 'red' ? '红' : '蓝'}队，请重新准备。`);
         }
         broadcast(room);
+      } else if (data.type === 'addBot') {
+        if (room.hostId !== player.id || room.status !== 'lobby') { fail(ws, '只有房主能在准备房间添加机器人。'); return; }
+        if (room.players.size >= MAX_PLAYERS) { fail(ws, '房间已满，最多 6 人（含机器人）。'); return; }
+        if (typeof data.level !== 'string' || !Object.hasOwn(Bot.levels, data.level)) { fail(ws, '机器人难度无效。'); return; }
+        const order = room.nextOrder++;
+        const robot = { id: randomBytes(8).toString('hex'), name: `${Bot.levels[data.level].label}机器人${order + 1}`,
+          bot: data.level, ws: null, ready: true, targetId: null, game: null, rank: null, disconnectedAt: null, room, order,
+          team: [...room.players.values()].filter(other => other.team === 'red').length <=
+            [...room.players.values()].filter(other => other.team === 'blue').length ? 'red' : 'blue' };
+        room.players.set(robot.id, robot);
+        event(room, `${robot.name} 加入房间。`);
+        broadcast(room);
+      } else if (data.type === 'kick') {
+        if (room.hostId !== player.id) { fail(ws, '只有房主可以移出玩家。'); return; }
+        const target = room.players.get(data.id);
+        if (!target || target.id === player.id) { fail(ws, '请选择房间内的其他玩家。'); return; }
+        const targetSocket = target.ws;
+        if (targetSocket) targetSocket.player = null;
+        removePlayer(room, target);
+        send(targetSocket, { type: 'kicked', message: '你已被房主移出房间。' });
+        if (targetSocket) { sendLeaderboard(targetSocket, true); sendDirectory(targetSocket, directory(), true); }
       } else if (data.type === 'leave') {
         ws.player = null;
         removePlayer(room, player);
@@ -450,11 +479,58 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
     });
   });
 
+  function botSignature(game) {
+    return JSON.stringify([game.board, game.active, game.hold, game.holdUsed, game.pending, game.cleanseQueued]);
+  }
+  function tickBot(room, player, now, budget) {
+    if (!player.bot || !player.game?.alive || room.status !== 'playing') return;
+    const config = Bot.levels[player.bot];
+    const state = player.botState ||= { nextAt: now + config.interval, pieceReadyAt: now + config.pieceDelay,
+      choice: randomInt(10000) / 10000, actions: [], signature: null };
+    if (now < state.nextAt) return;
+    const bomb = Bomb.snapshot(room);
+    if (Bot.reactionReady(state, 'passReadyAt', bomb?.holderId === player.id && bomb.cleared >= 1, now, config.reactionDelay)) {
+      state.nextAt = now + Bot.levels[player.bot].interval;
+      const target = Bomb.pass(room, player, now);
+      if (target) event(room, `${player.name} 把炸弹传给了 ${target.name}。`, 'attack');
+      return;
+    }
+    const game = player.game;
+    const needsCleanse = room.settings.cleanse && game.energy >= 6 && !game.cleanseQueued &&
+      (game.pending >= 2 || game.board.slice(0, 8).some(row => row.some(Boolean)));
+    if (Bot.reactionReady(state, 'cleanseReadyAt', needsCleanse, now, config.reactionDelay)) {
+      state.nextAt = now + Bot.levels[player.bot].interval;
+      applyResult(room, player, act(game, 'cleanse', now), now);
+      state.actions = [];
+      return;
+    }
+    const signature = botSignature(game);
+    if (!state.actions.length || signature !== state.signature) {
+      if (!budget.remaining) return;
+      budget.remaining--;
+      state.actions = Bot.plan(snapshotGame(game), room.settings, player.bot, state.choice);
+    }
+    state.nextAt = now + Bot.levels[player.bot].interval;
+    if ((!state.actions.length || state.actions[0] === 'drop') && now < state.pieceReadyAt) {
+      state.signature = signature;
+      return;
+    }
+    const action = state.actions.shift() || 'drop';
+    if (ACTIONS.has(action)) {
+      const result = act(game, action, now);
+      applyResult(room, player, result, now);
+      if (result.locked || !result.changed) state.actions = [];
+    }
+    state.signature = botSignature(game);
+    finishIfNeeded(room, now);
+  }
+
   let previousTick = Date.now();
   const timer = setInterval(() => {
     const now = Date.now();
     const elapsed = Math.min(100, now - previousTick);
     previousTick = now;
+    const botBudget = { remaining: 1 };
     for (const room of rooms.values()) {
       for (const player of [...room.players.values()]) {
         if (player.disconnectedAt && now - player.disconnectedAt > RECONNECT_MS) removePlayer(room, player);
@@ -468,6 +544,11 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
           for (const { player, result } of results) applyResult(room, player, result, now);
           recordEliminations(room);
           finishIfNeeded(room, now);
+          if ([...room.players.values()].some(player => !player.bot && player.ws)) {
+            const robots = [...room.players.values()].filter(player => player.bot)
+              .sort((a, b) => (a.botState?.nextAt ?? 0) - (b.botState?.nextAt ?? 0));
+            for (const player of robots) tickBot(room, player, now, botBudget);
+          }
         }
       }
       if (room.dirty) broadcast(room);

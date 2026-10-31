@@ -47,7 +47,7 @@ test('same-batch sprint completion shares victory', () => {
 });
 
 for (const rows of [4, 8, 12]) {
-  test(`dig ${rows}: identical grouped holes, independent seven-bag and forbidden cleanse`, () => {
+  test(`dig ${rows}: identical seeded random holes, independent seven-bag and forbidden cleanse`, () => {
     const room = roomFor('dig', 2, { digRows: rows, cleanse: true });
     const [a, b] = [...room.players.values()].map(player => player.game);
     assert.deepEqual(a.board, b.board);
@@ -56,13 +56,26 @@ for (const rows of [4, 8, 12]) {
     assert.deepEqual(a.queue, createGame(42).queue);
     assert.equal(a.active.type, createGame(42).active.type);
     const holes = a.board.slice(-rows).map(row => row.indexOf(null));
-    for (let i = 0; i < rows; i += 4) assert.equal(new Set(holes.slice(i, i + 4)).size, 1);
-    if (rows > 4) assert.notEqual(holes[0], holes[4]);
+    assert.ok(new Set(holes.slice(0, 4)).size > 1, 'initial holes are not grouped in packets of four');
+    assert.notDeepEqual(a.board, createGame(43, { mode: 'dig', digRows: rows }).board);
+    for (const row of a.board.slice(-rows)) assert.equal(row.filter(cell => cell === null).length, 1);
     assert.deepEqual(Match.routeAttack(room, room.players.get('0'), 4), []);
     a.energy = 12;
     assert.equal(act(a, 'cleanse').changed, false);
   });
 }
+
+test('dig cannot enable packet holes through presets, normalization, patches or game creation', () => {
+  assert.equal(Rules.presets.dig.settings.packetHole, false);
+  assert.equal(Rules.normalize({ ...Rules.defaults, mode: 'dig', packetHole: true }).packetHole, false);
+  const dig = Rules.validate(Rules.defaults, { mode: 'dig', packetHole: true });
+  assert.equal(dig.packetHole, false);
+  assert.equal(Rules.validate(dig, { packetHole: true }).packetHole, false);
+  const game = createGame(42, { mode: 'dig', packetHole: true });
+  assert.equal(game.settings.packetHole, false);
+  enqueueGarbage(game, 4, 1000);
+  assert.equal(game.garbage[0].hole, null);
+});
 
 test('dig challenge continues with one survivor, supports solo completion and all-failed', () => {
   const room = roomFor('dig');

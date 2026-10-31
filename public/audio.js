@@ -81,6 +81,11 @@
         if (kind === 'clear') {
           const count = Math.max(1, Math.min(4, lines));
           for (let i = 0; i < count + 1; i++) tone(440 * Math.pow(2, i / 5), now + i * .035, .12, 'triangle', .045);
+        } else if (kind === 'message') {
+          tone(660, now, .09, 'sine', .04);
+          tone(880, now + .08, .12, 'sine', .03);
+        } else if (kind === 'bombTick') {
+          tone(1000, now, .055, 'triangle', .035, 750);
         } else if (kind === 'bomb') {
           tone(150, now, .55, 'sine', .11, 28);
           tone(85, now + .015, .32, 'triangle', .055, 32);

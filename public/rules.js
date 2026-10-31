@@ -45,7 +45,7 @@
     timed: { name: '三分钟挑战', settings: { ...defaults, mode: 'timed' } },
     sprint: { name: '消行竞速', settings: { ...defaults, mode: 'sprint' } },
     teams: { name: '团队对抗', settings: { ...defaults, mode: 'teams' } },
-    dig: { name: '挖掘挑战', settings: { ...defaults, mode: 'dig', cleanse: false, counter: false } },
+    dig: { name: '挖掘挑战', settings: { ...defaults, mode: 'dig', packetHole: false, cleanse: false, counter: false } },
     coop: { name: '合作守城', settings: { ...defaults, mode: 'coop', counter: true } },
     practice: { name: '自由练习', settings: { ...defaults, mode: 'practice' } },
   };
@@ -67,7 +67,7 @@
   }
   function normalize(settings) {
     const result = { ...settings };
-    if (result.mode === 'dig') { result.cleanse = false; result.combo = false; result.counter = false; result.digBonus = false; }
+    if (result.mode === 'dig') { result.packetHole = false; result.cleanse = false; result.combo = false; result.counter = false; result.digBonus = false; }
     if (result.mode === 'coop') result.counter = true;
     return result;
   }

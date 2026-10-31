@@ -287,26 +287,26 @@ async function main() {
     await b.cdp.call('Page.bringToFront');
     await a.evaluate(`document.querySelector('[data-action="drop"]').click()`);
     await until(() => victim.game.pending === 4, 'queued attack');
-    await until(() => b.evaluate(`document.querySelector('#incomingToastText').textContent.includes('阿岚')`), 'attacker warning');
+    await until(() => b.evaluate(`document.querySelector('#incomingNotice').textContent.includes('阿岚')`), 'attacker warning');
     assert.equal(victim.game.received, 0);
     await until(() => b.evaluate(`document.querySelectorAll('#attackQueue .reserve-row').length === 4`), 'four visible reserved rows');
     assert.equal(await b.evaluate(`document.querySelector('#attackValue').textContent`), '待入盘');
     await until(() => Date.now() >= victim.game.garbage[0].readyAt, 'two-second buffer');
     await b.evaluate(`document.querySelector('[data-action="drop"]').click()`);
     await until(() => victim.game.received === 4, 'actual garbage insertion');
-    await until(() => b.evaluate(`!document.querySelector('#hitOverlay').classList.contains('is-hidden') && document.querySelector('#hitOverlay').textContent.includes('阿岚')`), 'visible hit overlay');
+    await until(() => b.evaluate(`document.querySelector('#incomingNotice').textContent.includes('已入盘')`), 'visible hit overlay');
     await sleep(110);
     const hit = await b.evaluate(`(() => {
-      const overlay=document.querySelector('#hitOverlay'), canvas=document.querySelector('#battleEffects');
+      const overlay=document.querySelector('#incomingNotice'), canvas=document.querySelector('#battleEffects');
       const pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
       let painted=0; for(let i=3;i<pixels.length;i+=4) if(pixels[i]) painted++;
-      return {text:overlay.textContent, opacity:Number(getComputedStyle(overlay).opacity), display:getComputedStyle(overlay).display, painted, title:document.querySelector('#incomingToastTitle').textContent};
+      return {text:overlay.textContent, opacity:Number(getComputedStyle(overlay).opacity), display:getComputedStyle(overlay).display, painted, title:document.querySelector('#incomingNotice').textContent};
     })()`);
     assert.match(hit.text, /阿岚/);
-    assert.match(hit.text, /命中 \+4 行/);
+    assert.match(hit.text, /已入盘/);
     assert.ok(hit.opacity > .1 && hit.display !== 'none');
     assert.ok(hit.painted > 1000, `Expected actual FX pixels, got ${hit.painted}`);
-    assert.match(hit.title, /实际受击/);
+    assert.match(hit.title, /已入盘/);
     await fs.mkdir(path.join(__dirname, '../.test-artifacts'), { recursive: true });
     const shot = await b.cdp.call('Page.captureScreenshot', { format: 'png' });
     await fs.writeFile(path.join(__dirname, '../.test-artifacts/actual-hit.png'), Buffer.from(shot.data, 'base64'));
@@ -333,8 +333,8 @@ async function main() {
     await until(() => Date.now() >= attacker.game.garbage[0].readyAt, 'reverse buffer');
     await a.evaluate(`document.querySelector('[data-action="drop"]').click()`);
     await until(() => attacker.game.received === 2, 'reverse insertion');
-    await until(() => a.evaluate(`document.querySelector('#hitOverlay').textContent.includes('小周')`), 'reverse source shown');
-    const mobile = await a.evaluate(`({source: document.querySelector('#hitOverlay').textContent, visible: getComputedStyle(document.querySelector('#hitOverlay')).display, title:document.querySelector('#incomingToastTitle').textContent})`);
+    await until(() => a.evaluate(`document.querySelector('#incomingNotice').textContent.includes('小周')`), 'reverse source shown');
+    const mobile = await a.evaluate(`({source: document.querySelector('#incomingNotice').textContent, visible: getComputedStyle(document.querySelector('#incomingNotice')).display, title:document.querySelector('#incomingNotice').textContent})`);
     assert.match(mobile.source, /小周/);
     assert.notEqual(mobile.visible, 'none');
     const mobileShot = await a.cdp.call('Page.captureScreenshot', { format: 'png' });
@@ -370,11 +370,11 @@ async function main() {
     await a.evaluate(`document.querySelector('#startButton').click()`);
     await until(() => room.status === 'playing', 'dig started', 7000);
     const digGame = attacker.game;
-    for (let remaining = 8; remaining > 0; remaining -= 4) {
+    for (let remaining = 8; remaining > 0; remaining--) {
       const hole = digGame.board[19].indexOf(null);
-      digGame.active = { type:'I', matrix:[[1],[1],[1],[1]], x:hole, y:0 };
+      digGame.active = { type:'I', matrix:[[1]], x:hole, y:19 };
       await a.evaluate(`document.querySelector('[data-action="drop"]').click()`);
-      await until(() => digGame.board.filter(row => row.includes('G')).length === remaining - 4, 'dig group cleared');
+      await until(() => digGame.board.filter(row => row.includes('G')).length === remaining - 1, 'dig group cleared');
     }
     await until(() => room.status === 'finished', 'dig completed');
     const digTitle = await a.evaluate(`document.querySelector('#finishTitle').textContent`);

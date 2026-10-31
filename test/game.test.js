@@ -298,6 +298,134 @@ test('WebSocket expired bomb explodes before accepting a late pass', async t => 
   assert.equal(room.bomb.cleared, 0);
 });
 
+test('bots are host-only, auto-ready, capacity bounded and never become host', async t => {
+  const { app, room, clients: [a, b], ids } = await connectedRoom(t, null, 2);
+  b.send({ type: 'addBot', level: 'normal' });
+  await b.wait(data => data.type === 'error' && data.message.includes('房主'));
+  a.send({ type: 'addBot', level: 'invalid' });
+  await a.wait(data => data.type === 'error' && data.message.includes('难度'));
+  for (let i = 0; i < 4; i++) {
+    a.send({ type: 'addBot', level: 'normal' });
+    const state = await a.wait(isState(value => value.players.length === i + 3));
+    assert.ok(state.room.players.filter(player => player.bot).every(player => player.ready && player.connected));
+  }
+  a.send({ type: 'addBot', level: 'easy' });
+  await a.wait(data => data.type === 'error' && data.message.includes('满'));
+  a.send({ type: 'preset', id: 'sprint' });
+  await a.wait(isState(value => value.presetId === 'sprint'));
+  assert.ok([...room.players.values()].filter(player => player.bot).every(player => player.ready));
+  const robot = [...room.players.values()].find(player => player.bot);
+  a.send({ type: 'kick', id: robot.id });
+  await a.wait(isState(value => !value.players.some(player => player.id === robot.id)));
+  a.send({ type: 'leave' });
+  await b.wait(isState(value => value.hostId === ids[1]));
+  b.send({ type: 'leave' });
+  await b.wait(data => data.type === 'left');
+  assert.equal(app.rooms.has(room.code), false);
+});
+
+test('bot teams are balanced and disconnected humans retain host until expiry', async t => {
+  const { app, room, clients: [a], ids } = await connectedRoom(t, { mode: 'teams' }, 1);
+  a.send({ type: 'addBot', level: 'easy' });
+  await a.wait(isState(value => value.players.length === 2));
+  const bot = [...room.players.values()].find(player => player.bot);
+  assert.notEqual(bot.team, room.players.get(ids[0]).team);
+  a.send({ type: 'ready', ready: true });
+  await a.wait(isState(value => value.players.every(player => player.ready)));
+  assert.equal(require('../match').startError(room), null);
+  const closed = new Promise(resolve => a.ws.once('close', resolve));
+  a.ws.close(); await closed;
+  const deadline = Date.now() + 1000;
+  while (room.players.get(ids[0]).ws && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(room.players.get(ids[0]).ws, null);
+  assert.equal(room.hostId, ids[0]);
+  room.players.get(ids[0]).disconnectedAt = Date.now() - 31000;
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(app.rooms.has(room.code), false);
+});
+
+test('bot plays authoritative actions, passes bombs and its scores stay out of leaderboard', async t => {
+  const { room, clients: [a], ids, url } = await connectedRoom(t, { mode: 'practice', hotPotato: true }, 1);
+  a.send({ type: 'addBot', level: 'hard' });
+  await a.wait(isState(value => value.players.length === 2));
+  const bot = [...room.players.values()].find(player => player.bot);
+  await readyAndStart([a]);
+  await a.wait(isState(value => value.players.find(player => player.bot)?.game?.score > 0));
+  room.bomb.holderId = bot.id; room.bomb.holderOrder = bot.order; room.bomb.cleared = 1;
+  await a.wait(isState(value => value.bomb?.holderId === ids[0]));
+  a.send({ type: 'addBot', level: 'easy' });
+  await a.wait(data => data.type === 'error' && data.message.includes('准备房间'));
+  a.send({ type: 'endPractice' });
+  await a.wait(isState(value => value.status === 'finished'));
+  const visitor = await client(url);
+  const board = await visitor.wait(data => data.type === 'leaderboardList');
+  assert.ok(board.entries.every(entry => entry.name !== bot.name));
+  a.send({ type: 'rematch' });
+  const reset = await a.wait(isState(value => value.status === 'lobby'));
+  assert.equal(reset.room.players.find(player => player.bot).ready, true);
+  assert.equal(bot.botState, null);
+});
+
+test('easy bot waits before its first hard drop', async t => {
+  const { room, clients: [a] } = await connectedRoom(t, { mode: 'practice' }, 1);
+  a.send({ type: 'addBot', level: 'easy' });
+  await a.wait(isState(value => value.players.length === 2));
+  await readyAndStart([a]);
+  const bot = [...room.players.values()].find(player => player.bot);
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  assert.ok(bot.game.board.every(row => row.every(cell => !cell)));
+  assert.ok(bot.botState.pieceReadyAt > Date.now());
+});
+
+test('five bots all receive planning time and lock pieces in a full room', async t => {
+  const { room, clients: [a] } = await connectedRoom(t, { mode: 'practice' }, 1);
+  for (let i = 0; i < 5; i++) {
+    a.send({ type: 'addBot', level: 'hard' });
+    await a.wait(isState(value => value.players.length === i + 2));
+  }
+  await readyAndStart([a]);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && [...room.players.values()].some(player => player.bot && !player.game.board.some(row => row.some(Boolean)))) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.ok([...room.players.values()].filter(player => player.bot).every(player => player.game.board.some(row => row.some(Boolean))));
+});
+
+test('bot uses cleanse under pressure and stops planning after elimination', async t => {
+  const { room, clients: [a] } = await connectedRoom(t, { mode: 'practice' }, 1);
+  a.send({ type: 'addBot', level: 'hard' });
+  await a.wait(isState(value => value.players.length === 2));
+  await readyAndStart([a]);
+  const bot = [...room.players.values()].find(player => player.bot);
+  bot.game.energy = 6;
+  enqueueGarbage(bot.game, 3);
+  await a.wait(isState(value => value.players.find(player => player.bot)?.game?.cleanseQueued));
+  bot.game.alive = false;
+  const score = bot.game.score;
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(bot.game.score, score);
+});
+
+test('only host can kick another player and kicked sessions cannot resume', async t => {
+  const { room, clients: [a, b, c], ids } = await connectedRoom(t, null, 3);
+  const token = room.players.get(ids[1]).token;
+  b.send({ type: 'kick', id: ids[2] });
+  await b.wait(data => data.type === 'error' && data.message.includes('房主'));
+  a.send({ type: 'kick', id: ids[0] });
+  await a.wait(data => data.type === 'error' && data.message.includes('其他'));
+  await readyAndStart([a, b, c]);
+  a.send({ type: 'kick', id: ids[1] });
+  await b.wait(data => data.type === 'kicked');
+  assert.equal(room.players.has(ids[1]), false);
+  assert.equal(room.status, 'playing');
+  b.send({ type: 'resume', token });
+  await b.wait(data => data.type === 'resumeFailed');
+  a.send({ type: 'kick', id: ids[2] });
+  await c.wait(data => data.type === 'kicked');
+  assert.equal(room.status, 'finished');
+  assert.deepEqual(room.outcome.winnerIds, [ids[0]]);
+});
+
 test('WebSocket settings permissions, validation, ready reset and immutable in-game rules', async t => {
   const { room, clients: [a, b] } = await connectedRoom(t, { attack: 'round' }, 2);
   b.send({ type: 'settings', settings: { attack: 'all' } });
@@ -631,9 +759,12 @@ test('WebSocket solo dig completion and coop rescue/waves/success integrate end 
   const dig = await connectedRoom(t, { mode: 'dig', digRows: 4 }, 1);
   await readyAndStart(dig.clients);
   const game = dig.room.players.get(dig.ids[0]).game;
-  const hole = game.board[19].indexOf(null);
-  game.active = { type: 'I', matrix: [[1], [1], [1], [1]], x: hole, y: 0 };
-  dig.clients[0].send({ type: 'action', action: 'drop' });
+  for (let remaining = 4; remaining > 0; remaining--) {
+    const hole = game.board[19].indexOf(null);
+    game.active = { type: 'I', matrix: [[1]], x: hole, y: 19 };
+    dig.clients[0].send({ type: 'action', action: 'drop' });
+    if (remaining > 1) await dig.clients[0].wait(isState(value => value.players[0].game.dug === 5 - remaining));
+  }
   const finish = await dig.clients[0].wait(isState(value => value.status === 'finished'));
   assert.deepEqual(finish.room.outcome.winnerIds, dig.ids);
   assert.equal(finish.room.players[0].game.dug, 4);

@@ -124,9 +124,8 @@ function createGame(seed = Date.now(), settings = defaults) {
   };
   if (game.settings.mode === 'dig') {
     const layoutRandom = seededRandom(seed ^ 0x51a7);
-    let hole = -1;
     for (let i = 0; i < game.settings.digRows; i++) {
-      if (i % 4 === 0) hole = (hole + 1 + Math.floor(layoutRandom() * (WIDTH - 1))) % WIDTH;
+      const hole = Math.floor(layoutRandom() * WIDTH);
       game.board.shift();
       game.board.push(Array.from({ length: WIDTH }, (_, x) => x === hole ? null : 'G'));
     }
