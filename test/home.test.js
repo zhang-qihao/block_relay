@@ -52,6 +52,7 @@ test('touch controls use the requested fixed two-row order', () => {
   assert.equal((html.match(/id="passBombButton"/g) || []).length, 1);
   const css = publicFile('styles.css').toString();
   assert.doesNotMatch(css, /\.touch-controls #cleanseButton \{ grid-column: span 2/);
+  assert.match(css, /\.mobile-controls \{[^}]*user-select: none;[^}]*-webkit-user-select: none;[^}]*-webkit-touch-callout: none;/);
 });
 
 test('homepage version matches package and lockfile versions', () => {

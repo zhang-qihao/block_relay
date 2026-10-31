@@ -339,7 +339,7 @@ select:disabled { opacity: .75; }
   .bomb-panel { display: flex; max-width: 480px; margin: 0 auto 8px; flex-wrap: wrap; }
   .bomb-panel .button { width: 100%; min-height: 40px; }
 }
-.mobile-controls { max-width: 420px; margin: 14px auto 0; }
+.mobile-controls { max-width: 420px; margin: 14px auto 0; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .input-mode-row { display: none; }
 .touch-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0 auto; }
 .touch-controls button { min-height: 48px; border: 1px solid #3b4964; border-radius: var(--radius-control); background: #1c2a44; color: var(--text); font: 18px monospace; touch-action: none; user-select: none; }
