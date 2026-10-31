@@ -72,7 +72,8 @@ function beginMatch(room, seed, now, countdownMs) {
   room.status = 'countdown';
   room.startsAt = now + countdownMs;
   room.deadline = room.settings.mode === 'timed' ? room.startsAt + room.settings.duration * 1000 : null;
-  room.nextEnvironmentAt = room.settings.mode === 'battle' ? room.startsAt + 30000 : null;
+  room.nextEnvironmentAt = room.settings.randomGarbage ? room.startsAt + 30000 : null;
+  room.bomb = null;
   room.bountyId = null;
   room.bountyOrder = -1;
   room.nextBountyAt = null;
@@ -143,6 +144,7 @@ function complete(room, reason, winners = [], winningTeam = null, byScore = fals
     results: players.map(player => ({ id: player.id, name: player.name, team: player.team, rank: player.rank,
       lines: player.game.lines, score: player.game.score, dug: player.game.dug, cancelled: player.game.cancelled, purified: player.game.purified, helped: player.game.helped })),
   };
+  room.bomb = null;
   room.status = 'finished';
   room.dirty = true;
 }
@@ -193,12 +195,12 @@ function advanceMatch(room, now) {
     const target = rotateBounty(room, now);
     if (target) notices.push(`本轮悬赏目标：${target.name}，20 秒后轮换。`);
   }
-  if (room.settings.mode === 'battle' && now >= room.nextEnvironmentAt) {
+  if (room.settings.randomGarbage && room.nextEnvironmentAt != null && now >= room.nextEnvironmentAt) {
     const count = Math.floor((now - room.nextEnvironmentAt) / 30000) + 1;
-    for (const player of room.players.values()) enqueueGarbage(player.game, count, now);
+    for (const player of room.players.values()) enqueueGarbage(player.game, count, now, { sourceName: '乱扔垃圾' });
     room.nextEnvironmentAt += count * 30000;
     room.dirty = true;
-    notices.push(`环境上涨：所有存活玩家收到 ${count} 行障碍。`);
+    notices.push(`乱扔垃圾：所有存活玩家收到 ${count} 行障碍。`);
   }
   if (room.settings.mode === 'coop' && room.nextWaveAt != null) {
     while (room.wave < room.settings.waves && now >= room.nextWaveAt) {

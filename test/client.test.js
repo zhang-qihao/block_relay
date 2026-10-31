@@ -102,8 +102,20 @@ function browserFixture(width = 1200) {
   const players = [0, 1, 2].map(i => ({ id: String(i), name: `玩家${i}`, team: i % 2 ? 'blue' : 'red', connected: true, ready: true, rank: null,
     game: snapshotGame(createGame(42)) }));
   const room = { code: 'ABCD', hostId: '0', roundId: 1, effects: [], status: 'lobby', settings: { ...Rules.defaults }, players, events: [], serverNow: Date.now() };
-  return { nodes, ws, room, actions, timers: timerCallbacks, windowEvents, receive: () => ws.receive({ type: 'state', room }) };
+  return { nodes, ws, room, actions, timers: timerCallbacks, windowEvents, body: document.body, receive: () => ws.receive({ type: 'state', room }) };
 }
+
+test('viewport lock is scoped to waiting room and released on match or leave', () => {
+  const { room, receive, ws, body } = browserFixture();
+  receive();
+  assert.equal(body.classes.has('waiting-visible'), true);
+  room.status = 'playing'; receive();
+  assert.equal(body.classes.has('waiting-visible'), false);
+  room.status = 'lobby'; receive();
+  assert.equal(body.classes.has('waiting-visible'), true);
+  ws.receive({ type: 'left' });
+  assert.equal(body.classes.has('waiting-visible'), false);
+});
 
 test('real client scripts render every mode and attack configuration without runtime errors', () => {
   const { room, receive, nodes } = browserFixture();
@@ -111,13 +123,13 @@ test('real client scripts render every mode and attack configuration without run
     room.settings.mode = mode;
     room.status = 'lobby';
     receive();
-    assert.equal(nodes.get('modeSelect').value, mode);
-    assert.equal(nodes.get('modeDescription').textContent, Rules.modes[mode][1]);
+    assert.equal(nodes.get('presetGoal').textContent, Rules.summary(room.settings)[0]);
+    assert.equal(nodes.get('attackSelect').disabled, !Rules.hostile(room.settings));
     for (const attack of Object.keys(Rules.attacks)) {
       room.settings.attack = attack;
       room.status = 'playing';
       room.deadline = Date.now() + 10000;
-      room.nextEnvironmentAt = mode === 'battle' ? Date.now() + 30000 : null;
+      room.nextEnvironmentAt = room.settings.randomGarbage ? Date.now() + 30000 : null;
       receive();
       assert.match(nodes.get('matchRulesLabel').textContent, new RegExp(Rules.modes[mode][0]));
       assert.equal(nodes.get('playerMonitors').children.length, 3);
@@ -128,11 +140,11 @@ test('real client scripts render every mode and attack configuration without run
 test('client settings, team and cleanse controls send authoritative protocol actions', () => {
   const { room, receive, nodes, ws } = browserFixture();
   receive();
-  const select = nodes.get('modeSelect');
-  select.value = 'teams';
+  const select = nodes.get('attackSelect');
+  select.value = 'manual';
   select.fire('change');
   assert.equal(ws.sent.at(-1).type, 'settings');
-  assert.equal(ws.sent.at(-1).settings.mode, 'teams');
+  assert.equal(ws.sent.at(-1).settings.attack, 'manual');
   nodes.get('teamSelect').value = 'blue';
   nodes.get('teamSelect').fire('change');
   assert.equal(ws.sent.at(-1).team, 'blue');
@@ -229,14 +241,15 @@ test('actual insertion shows hit overlay and actual attacker after the earlier w
   assert.match(nodes.get('incomingNotice').children[0].textContent, /已入盘/);
 });
 
-test('preset lobby has one closed customization level and correct new mode summaries', () => {
+test('preset lobby exposes only preset and attack distribution with fixed rule summaries', () => {
   const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
-  assert.equal((html.match(/<details\b/g) || []).length, 1);
-  assert.match(html, /<details id="customRules" class="custom-rules">/);
+  assert.equal((html.match(/<details\b/g) || []).length, 0);
+  assert.doesNotMatch(html, /id="(?:modeSelect|customRules)"/);
+  assert.match(html, /<dialog id="ruleOptionsDialog"/);
   const { room, receive, nodes, ws } = browserFixture();
   room.presetId = 'friends';
   receive();
-  assert.equal(nodes.get('presetSelect').children.length, 10);
+  assert.equal(nodes.get('presetSelect').children.length, Object.keys(Rules.presets).length);
   assert.equal(nodes.get('presetSelect').value, 'friends');
   nodes.get('presetSelect').value = 'dig';
   nodes.get('presetSelect').fire('change');
@@ -245,7 +258,7 @@ test('preset lobby has one closed customization level and correct new mode summa
   room.presetId = 'dig';
   receive();
   assert.match(nodes.get('presetGoal').textContent, /8 行障碍/);
-  assert.equal(nodes.get('digRowsField').classes.has('is-hidden'), false);
+  assert.equal(nodes.get('attackSelect').disabled, true);
   room.settings = { ...Rules.presets.coop.settings };
   room.presetId = 'coop';
   room.status = 'playing';
@@ -258,6 +271,45 @@ test('preset lobby has one closed customization level and correct new mode summa
   room.outcome = { winningTeam: 'coop', winnerIds: ['0', '1', '2'], reason: '团队守城成功', results: [] };
   receive();
   assert.match(nodes.get('finishTitle').textContent, /大家赢了/);
+});
+
+test('optional rules dialog synchronizes tags, permissions and mode-specific controls', () => {
+  const { room, receive, nodes, ws } = browserFixture();
+  room.presetId = 'timed'; room.settings = { ...Rules.presets.timed.settings };
+  receive();
+  nodes.get('openRuleOptions').fire('click');
+  assert.equal(nodes.get('ruleOptionsDialog').open, true);
+  assert.equal(nodes.get('durationField').classes.has('is-hidden'), false);
+  assert.equal(nodes.get('goalField').classes.has('is-hidden'), true);
+  nodes.get('durationSelect').value = '60'; nodes.get('durationSelect').fire('change');
+  assert.equal(ws.sent.at(-1).settings.duration, 60);
+  room.settings.duration = 60; receive();
+  assert.ok(nodes.get('ruleTags').children.some(tag => tag.textContent === '比赛时长：1 分钟'));
+  assert.equal(nodes.get('presetSelect').value, 'timed');
+  const combo = nodes.get('ruleToggles').children.find(label => label.children[0].dataset.option === 'combo').children[0];
+  combo.checked = true; combo.fire('change');
+  assert.equal(ws.sent.at(-1).settings.combo, true);
+  room.settings.combo = true; receive();
+  assert.ok(nodes.get('ruleTags').children.some(tag => tag.textContent === '连击奖励：开'));
+  room.hostId = '1'; receive();
+  assert.equal(combo.disabled, true);
+  assert.equal(nodes.get('durationSelect').disabled, true);
+  const count = ws.sent.length;
+  combo.fire('change'); assert.equal(ws.sent.length, count);
+  room.hostId = '0'; room.settings = { ...Rules.presets.coop.settings }; receive();
+  const counter = nodes.get('ruleToggles').children.find(label => label.children[0].dataset.option === 'counter').children[0];
+  assert.equal(counter.disabled, true);
+  assert.equal(nodes.get('wavesField').classes.has('is-hidden'), false);
+  assert.equal(nodes.get('durationField').classes.has('is-hidden'), true);
+  room.settings = { ...Rules.presets.dig.settings }; receive();
+  assert.equal(nodes.get('digRowsField').classes.has('is-hidden'), false);
+  assert.ok(nodes.get('ruleToggles').children.filter(label => !['randomGarbage', 'hotPotato'].includes(label.children[0].dataset.option)).every(label => label.classes.has('is-hidden')));
+  nodes.get('ruleOptionsDialog').fire('keydown', { key: 'Escape' });
+  assert.equal(nodes.get('ruleOptionsDialog').open, false);
+  nodes.get('openRuleOptions').fire('click');
+  ws.fire('close'); assert.equal(nodes.get('digRowsSelect').disabled, true);
+  room.status = 'countdown'; room.startsAt = Date.now() + 5000; receive();
+  assert.equal(nodes.get('ruleOptionsDialog').open, false);
 });
 
 test('reserve shows individual rows without numeric quantities and visualizes cancellation only', () => {
@@ -511,6 +563,45 @@ test('focusing chat cancels directional repeat and new messages do not force scr
   assert.equal(list.scrollTop, 1000);
 });
 
+test('bomb controls follow holder, clear quota and connection while mini boards track transfers', () => {
+  const { room, receive, nodes, ws } = browserFixture();
+  room.status = 'playing'; room.settings.hotPotato = true;
+  room.bomb = { holderId: '0', cleared: 0, lit: true };
+  receive();
+  assert.equal(nodes.get('passBombButton').disabled, true);
+  assert.equal(nodes.get('mainBombBadge').classes.has('is-hidden'), false);
+  assert.equal(nodes.get('mainBombBadge').querySelector('.bomb-art').src, '/bomb.svg');
+  assert.equal(nodes.get('mainBombBadge').querySelector('.bomb-caption').textContent, '[0/1]按B传递！');
+  assert.equal(nodes.get('mainBoard').parentElement.classes.has('has-bomb'), true);
+  assert.equal(nodes.get('mainBoard').parentElement.classes.has('bomb-lit'), true);
+  room.bomb.cleared = 1; receive();
+  assert.equal(nodes.get('mainBombBadge').querySelector('.bomb-caption').textContent, '[1/1]按B传递！');
+  assert.equal(nodes.get('passBombButton').disabled, false);
+  nodes.get('passBombButton').fire('click');
+  assert.equal(ws.sent.at(-1).type, 'passBomb');
+  room.bomb = { holderId: '1', cleared: 0, lit: true }; receive();
+  assert.equal(nodes.get('passBombButton').disabled, true);
+  assert.equal(nodes.get('mainBombBadge').classes.has('is-hidden'), true);
+  const cards = nodes.get('playerMonitors').children;
+  assert.equal(cards[1].classes.has('has-bomb'), true);
+  assert.equal(cards[0].classes.has('has-bomb'), false);
+  assert.equal(cards[1].querySelector('.bomb-caption').textContent, '消 1 行可传');
+  assert.equal(cards[1].querySelector('.monitor-detail').children[0], cards[1].querySelector('.bomb-badge'));
+  assert.equal(cards[1].querySelector('.bomb-art').src, '/bomb.svg');
+  assert.equal(cards[1].querySelector('.bomb-badge').classes.has('is-lit'), true);
+  assert.equal(cards[1].querySelector('canvas').classes.has('bomb-lit'), true);
+  assert.equal(nodes.get('mainBoard').parentElement.classes.has('has-bomb'), false);
+  assert.equal(nodes.get('mainBoard').parentElement.classes.has('bomb-lit'), false);
+  room.bomb = { holderId: '0', cleared: 1, lit: true }; receive();
+  ws.fire('close');
+  assert.equal(nodes.get('mainBoard').parentElement.classes.has('bomb-lit'), false);
+  assert.equal(nodes.get('mainBoard').parentElement.classes.has('has-bomb'), true);
+  assert.equal(cards[1].querySelector('canvas').classes.has('has-bomb'), false);
+  assert.equal(nodes.get('passBombButton').disabled, true);
+  room.status = 'lobby'; room.bomb = null; receive();
+  assert.equal(nodes.get('bombPanel').classes.has('is-hidden'), true);
+});
+
 test('nickname input limits twelve characters, respects composition and trims on blur and join', () => {
   const { nodes, ws } = browserFixture();
   const input = nodes.get('nameInput');
@@ -590,12 +681,8 @@ test('finder opens from the join row, preserves errors and closes after joining'
   assert.equal(nodes.get('roomFinder').open, false);
   receive();
   assert.equal(nodes.get('chatPanel').style.values['--chat-height'], '200px');
-  nodes.get('customRules').open = true;
   nodes.get('waitingPanel').getBoundingClientRect = () => ({ height: 1200 });
   receive();
-  assert.equal(nodes.get('chatPanel').style.values['--chat-height'], '200px');
-  nodes.get('customRules').open = false;
-  nodes.get('customRules').fire('toggle');
   assert.equal(nodes.get('chatPanel').style.values['--chat-height'], '1200px');
 });
 
@@ -603,7 +690,8 @@ test('client renders team/tied results and non-host read-only settings', () => {
   const { room, receive, nodes } = browserFixture();
   room.hostId = '1';
   receive();
-  assert.equal(nodes.get('modeSelect').disabled, true);
+  assert.equal(nodes.get('presetSelect').disabled, true);
+  assert.equal(nodes.get('attackSelect').disabled, true);
   room.status = 'finished';
   room.settings.mode = 'teams';
   room.outcome = { winningTeam: 'red', winnerIds: ['0', '2'], reason: '红队获胜', results: room.players.map(player => ({ ...player, lines: 0, score: 0, rank: player.team === 'red' ? 1 : 2, dug: 0, cancelled: 0, purified: 0 })) };

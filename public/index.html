@@ -34,7 +34,7 @@
             <div class="room-entry-connection"><div class="signal-line"><span class="signal-dot"></span><span id="connectionLabel">正在连接房间服务…</span></div><p id="lanHint" class="lan-hint"></p></div>
           </section>
         </div>
-        <footer class="home-footer"><span>打开浏览器，朋友就在下一块。</span><span>一块接一块，一局又一局。</span></footer>
+        <footer class="home-footer"><span>打开浏览器，朋友就在下一块。</span><span>一块接一块，一局又一局。 <span class="home-version" aria-label="当前版本 v0.1.2">v0.1.2</span></span></footer>
       </section>
 
       <section id="roomView" class="view room-view is-hidden">
@@ -68,19 +68,10 @@
               <div class="section-caption"><span>对局规则</span><span id="settingsPermission">房主设置</span></div>
               <label class="field-label" for="presetSelect">推荐玩法<select id="presetSelect" class="text-input"></select></label>
               <p id="presetGoal" class="preset-goal"></p>
-              <p id="presetSummary" class="rule-description"></p>
-              <details id="customRules" class="custom-rules"><summary>调整规则</summary>
-              <label class="field-label" for="modeSelect">胜利方式<select id="modeSelect" class="text-input" data-setting="mode"></select></label>
-              <p id="modeDescription" class="rule-description"></p>
               <label class="field-label" for="attackSelect">攻击分配<select id="attackSelect" class="text-input" data-setting="attack"></select></label>
               <p id="attackDescription" class="rule-description"></p>
-              <label id="durationField" class="field-label is-hidden" for="durationSelect">比赛时长<select id="durationSelect" class="text-input" data-setting="duration"><option value="60">1 分钟</option><option value="180">3 分钟</option><option value="300">5 分钟</option></select></label>
-              <label id="goalField" class="field-label is-hidden" for="goalSelect">目标消行<select id="goalSelect" class="text-input" data-setting="goal"><option value="20">20 行</option><option value="40">40 行</option><option value="80">80 行</option></select></label>
-              <label id="digRowsField" class="field-label is-hidden" for="digRowsSelect">初始障碍<select id="digRowsSelect" class="text-input" data-setting="digRows"><option value="4">4 行 · 入门</option><option value="8">8 行 · 标准</option><option value="12">12 行 · 挑战</option></select></label>
-              <label id="wavesField" class="field-label is-hidden" for="wavesSelect">目标波数<select id="wavesSelect" class="text-input" data-setting="waves"><option value="3">3 波</option><option value="5">5 波</option><option value="8">8 波</option></select></label>
-              <div id="ruleToggles" class="rule-toggles"></div>
-              <p class="rule-description">灰色障碍补齐缺口即可消除；净化不增加消行进度。挖掘挑战禁止净化，合作守城自动先自保再救援。</p>
-              </details>
+              <button id="openRuleOptions" class="button button-secondary rule-options-button" type="button" aria-haspopup="dialog">选配规则</button>
+              <div id="ruleTags" class="rule-tags" role="list" aria-label="当前选配规则"></div>
             </div>
           </div>
           <div class="waiting-roster-wrap">
@@ -117,10 +108,10 @@
             </aside>
 
             <section class="board-stage">
-              <div class="board-frame"><canvas id="mainBoard" class="main-board" aria-label="你的俄罗斯方块棋盘"></canvas><div id="hitOverlay" class="hit-overlay is-hidden" aria-hidden="true"></div><div id="boardOverlay" class="board-overlay is-hidden"><div id="overlayMessage"></div></div></div>
+              <div class="board-frame"><canvas id="mainBoard" class="main-board" aria-label="你的俄罗斯方块棋盘"></canvas><span id="mainBombBadge" class="bomb-badge is-hidden" aria-hidden="true"></span><div id="hitOverlay" class="hit-overlay is-hidden" aria-hidden="true"></div><div id="boardOverlay" class="board-overlay is-hidden"><div id="overlayMessage"></div></div></div>
               <div id="incomingNotice" class="incoming-notice is-hidden" role="status" aria-live="polite"></div>
               <div class="board-footer"><div class="control-legend"><span><span class="keycap">← →</span>移动</span><span><span class="keycap">↑</span>旋转</span><span><span class="keycap">SPACE</span>硬降</span></div><div id="dangerLabel" class="danger-label"></div></div>
-              <div id="mobileControls" class="mobile-controls"><div class="input-mode-row"><button id="inputModeButton" class="text-button" type="button" aria-pressed="false">切换手势</button><span id="inputModeHint">按住方向连续移动，可同时旋转</span></div><div class="touch-controls" aria-label="触控操作"><button data-action="left" type="button" aria-label="左移">←</button><button data-action="down" type="button" aria-label="软降">↓</button><button data-action="right" type="button" aria-label="右移">→</button><button data-action="rotate" type="button" aria-label="旋转">↻</button><button data-action="hold" type="button">暂存</button><button data-action="drop" type="button" class="touch-drop">硬降</button><button id="cleanseButton" class="cleanse-button" type="button">净化（V · 6 点）</button></div></div>
+              <div id="mobileControls" class="mobile-controls"><div id="bombPanel" class="bomb-panel is-hidden"><div><strong id="bombHolderLabel"></strong><p id="bombProgress"></p></div><button id="passBombButton" class="button button-secondary" type="button" disabled>传递炸弹</button></div><div class="input-mode-row"><button id="inputModeButton" class="text-button" type="button" aria-pressed="false">切换手势</button><span id="inputModeHint">按住方向连续移动，可同时旋转</span></div><div class="touch-controls" aria-label="触控操作"><button data-action="left" type="button" aria-label="左移">←</button><button data-action="down" type="button" aria-label="软降">↓</button><button data-action="right" type="button" aria-label="右移">→</button><button data-action="rotate" type="button" aria-label="旋转">↻</button><button data-action="hold" type="button">暂存</button><button data-action="drop" type="button" class="touch-drop">硬降</button><button id="cleanseButton" class="cleanse-button" type="button">净化（V · 6 点）</button></div></div>
             </section>
 
             <aside class="spectator-panel"><div class="spectator-heading"><div><p class="eyebrow">实时棋盘</p><h2>场上玩家</h2></div><span id="spectatorCount" class="spectator-count">0</span></div><div id="spectatorTools" class="spectator-tools is-hidden"><div id="spectatorEffectButtons" class="spectator-effect-buttons" role="group" aria-label="观战互动效果"></div><p id="spectatorHint" class="rule-description" role="status">选择效果，点击仍在场玩家的棋盘。不影响对局。</p></div><div id="playerMonitors" class="player-monitors"></div><div class="spectator-footer"><span class="live-ring"></span><span>实时同步中</span></div></aside>
@@ -132,6 +123,19 @@
       </section>
     </main>
     <dialog id="roomFinder" class="room-finder" aria-labelledby="directoryTitle"><div class="directory-heading"><div><h2 id="directoryTitle">找一间，加入吧。</h2><p id="roomDirectoryCount" class="rule-description">正在获取房间…</p></div><button id="closeRoomFinder" class="text-button" type="button" aria-label="关闭房间查找">关闭 ✕</button></div><div class="directory-search"><label class="sr-only" for="roomSearchInput">查找房间</label><input id="roomSearchInput" class="text-input" type="search" maxlength="40" placeholder="房间码或房主昵称" autocomplete="off" /><button id="refreshRoomsButton" class="button button-secondary" type="button">刷新</button></div><div id="roomDirectoryList" class="room-directory-list"></div><p id="roomDirectoryMessage" class="rule-description" role="status">连接后自动显示当前服务器房间。</p><p id="roomFinderError" class="form-message" role="status"></p></dialog>
+    <dialog id="ruleOptionsDialog" class="room-finder rule-options-dialog" aria-labelledby="ruleOptionsTitle" aria-describedby="ruleOptionsHint">
+      <div class="directory-heading"><h2 id="ruleOptionsTitle">选配规则</h2><button id="closeRuleOptions" class="text-button" type="button">完成</button></div>
+      <p id="ruleOptionsHint" class="rule-description">修改即时生效，所有玩家需要重新准备。</p>
+      <div class="rule-options-fields">
+        <label id="durationField" class="field-label" for="durationSelect">比赛时长<select id="durationSelect" class="text-input" data-option="duration"><option value="60">1 分钟</option><option value="180">3 分钟</option><option value="300">5 分钟</option></select></label>
+        <label id="goalField" class="field-label" for="goalSelect">目标消行<select id="goalSelect" class="text-input" data-option="goal"><option value="20">20 行</option><option value="40">40 行</option><option value="80">80 行</option></select></label>
+        <label id="digRowsField" class="field-label" for="digRowsSelect">初始障碍<select id="digRowsSelect" class="text-input" data-option="digRows"><option value="4">4 行</option><option value="8">8 行</option><option value="12">12 行</option></select></label>
+        <label id="wavesField" class="field-label" for="wavesSelect">目标波数<select id="wavesSelect" class="text-input" data-option="waves"><option value="3">3 波</option><option value="5">5 波</option><option value="8">8 波</option></select></label>
+      </div>
+      <p class="rule-description">灰色障碍补齐缺口即可消除；净化不增加消行进度。挖掘挑战禁止净化，合作守城自动先自保再救援。</p>
+      <div id="ruleToggles" class="rule-toggles"></div>
+      <p id="ruleOptionsMessage" class="form-message" role="status"></p>
+    </dialog>
     <section id="countdownModal" class="countdown-modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="countdownMode" aria-describedby="countdownGoal">
       <div id="countdownGuide" class="countdown-guide">
         <span class="countdown-caption">本局玩法 · 即将开始</span>

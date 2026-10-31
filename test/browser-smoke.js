@@ -211,14 +211,8 @@ async function main() {
     assert.ok(chatLayout.chat.right < chatLayout.main.left, 'desktop chat must be left of lobby');
     const alignment = await a.evaluate(`({chat:document.querySelector('#chatPanel').getBoundingClientRect().top,lobby:document.querySelector('#waitingPanel').getBoundingClientRect().top})`);
     assert.ok(Math.abs(alignment.chat - alignment.lobby) <= 1, 'desktop chat and lobby align at the top');
-    const collapsedHeight = await a.evaluate(`document.querySelector('#waitingPanel').getBoundingClientRect().height`);
-    await until(() => a.evaluate(`Math.abs(document.querySelector('#chatPanel').getBoundingClientRect().height - document.querySelector('#waitingPanel').getBoundingClientRect().height) <= 2`), 'chat matches default lobby height');
-    await a.evaluate(`document.querySelector('#customRules').open=true`);
-    await sleep(150);
-    assert.ok(await a.evaluate(`document.querySelector('#waitingPanel').getBoundingClientRect().height > ${collapsedHeight} + 100`));
-    assert.ok(await a.evaluate(`Math.abs(document.querySelector('#chatPanel').getBoundingClientRect().height - ${collapsedHeight}) <= 2`), 'chat does not grow with rules');
-    await a.evaluate(`document.querySelector('#customRules').open=false`);
-    await sleep(80);
+    assert.equal(await a.evaluate(`document.querySelectorAll('.room-settings select').length`), 2);
+    await until(() => a.evaluate(`Math.abs(document.querySelector('#chatPanel').getBoundingClientRect().height - document.querySelector('#waitingPanel').getBoundingClientRect().height) <= 2`), 'chat matches lobby height');
     const chatShot = await a.cdp.call('Page.captureScreenshot', { format: 'png' });
     await fs.writeFile(path.join(__dirname, '../.test-artifacts/room-chat-desktop.png'), Buffer.from(chatShot.data, 'base64'));
     await a.evaluate(`document.querySelector('#chatInput').blur()`);
@@ -354,11 +348,10 @@ async function main() {
     await until(() => room.status === 'finished', 'old round ends');
     await a.evaluate(`document.querySelector('#rematchButton').click()`);
     await until(() => room.status === 'lobby', 'return lobby');
-    const lobby = await a.evaluate(`({closed:!document.querySelector('#customRules').open, details:document.querySelectorAll('details').length,
+    const lobby = await a.evaluate(`({details:document.querySelectorAll('details').length,
       presets:document.querySelector('#presetSelect').options.length, overflow:document.documentElement.scrollWidth > innerWidth})`);
-    assert.equal(lobby.closed, true);
-    assert.equal(lobby.details, 1);
-    assert.equal(lobby.presets, 10);
+    assert.equal(lobby.details, 0);
+    assert.equal(lobby.presets, 7);
     assert.equal(lobby.overflow, false);
     assert.equal(await a.evaluate(`document.querySelector('#chatMessages').textContent.includes('这局一起玩')`), true, 'chat survives rematch');
     await a.evaluate(`if(document.querySelector('#chatPanel').classList.contains('is-collapsed')) document.querySelector('#chatToggle').click(); document.querySelector('#chatPanel').scrollIntoView({block:'center'})`);
@@ -370,17 +363,19 @@ async function main() {
     await fs.writeFile(path.join(__dirname, '../.test-artifacts/mobile-lobby.png'), Buffer.from(lobbyShot.data, 'base64'));
     await a.evaluate(`document.querySelector('#presetSelect').value='dig'; document.querySelector('#presetSelect').dispatchEvent(new Event('change'))`);
     await until(() => room.settings.mode === 'dig', 'dig preset synchronized');
-    await a.evaluate(`document.querySelector('#customRules').open=true; document.querySelector('#digRowsSelect').value='4'; document.querySelector('#digRowsSelect').dispatchEvent(new Event('change'))`);
-    await until(() => room.settings.digRows === 4, 'dig rows customized');
+    assert.equal(room.settings.digRows, 8);
     await a.evaluate(`document.querySelector('#readyButton').click()`);
     await b.evaluate(`document.querySelector('#readyButton').click()`);
     await until(() => a.evaluate(`!document.querySelector('#startButton').disabled`), 'dig ready');
     await a.evaluate(`document.querySelector('#startButton').click()`);
     await until(() => room.status === 'playing', 'dig started', 7000);
     const digGame = attacker.game;
-    const hole = digGame.board[19].indexOf(null);
-    digGame.active = { type:'I', matrix:[[1],[1],[1],[1]], x:hole, y:0 };
-    await a.evaluate(`document.querySelector('[data-action="drop"]').click()`);
+    for (let remaining = 8; remaining > 0; remaining -= 4) {
+      const hole = digGame.board[19].indexOf(null);
+      digGame.active = { type:'I', matrix:[[1],[1],[1],[1]], x:hole, y:0 };
+      await a.evaluate(`document.querySelector('[data-action="drop"]').click()`);
+      await until(() => digGame.board.filter(row => row.includes('G')).length === remaining - 4, 'dig group cleared');
+    }
     await until(() => room.status === 'finished', 'dig completed');
     const digTitle = await a.evaluate(`document.querySelector('#finishTitle').textContent`);
     assert.match(digTitle, /你赢了/);

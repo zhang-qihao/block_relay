@@ -7,7 +7,7 @@ const { modes } = require('./public/rules');
 function validEntry(entry) {
   return entry && typeof entry.name === 'string' && entry.name.trim() && Array.from(entry.name).length <= 14 &&
     Number.isSafeInteger(entry.score) && entry.score > 0 &&
-    typeof entry.mode === 'string' && Object.hasOwn(modes, entry.mode) &&
+    typeof entry.mode === 'string' && (Object.hasOwn(modes, entry.mode) || ['battle', 'bomb'].includes(entry.mode)) &&
     Number.isSafeInteger(entry.at) && entry.at >= 0;
 }
 function recordKey(entry) {

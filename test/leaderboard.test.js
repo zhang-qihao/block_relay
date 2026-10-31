@@ -84,6 +84,20 @@ test('legacy records retain their original modes and new mode highs survive rest
   assert.deepEqual(restored.snapshot().entries.filter(entry => entry.name === '老玩家').map(entry => [entry.mode, entry.score, entry.rank]), [['practice', 500, 1], ['dig', 50, 1]]);
 });
 
+test('retired battle records remain readable and preserved without a selectable mode', async t => {
+  const file = temporary(t);
+  fs.mkdirSync(path.dirname(file));
+  const legacy = { name: '老玩家', mode: 'battle', score: 1200, at: 1 };
+  fs.writeFileSync(file, JSON.stringify({ version: 2, entries: [legacy] }));
+  const board = createLeaderboard({ file });
+  assert.equal(board.snapshot().available, true);
+  assert.equal(board.snapshot().storage, 'saved');
+  assert.deepEqual(board.snapshot().entries, []);
+  board.record('新玩家', 100, 'survival', 2);
+  await board.flush();
+  assert.ok(JSON.parse(fs.readFileSync(file)).entries.some(entry => entry.mode === 'battle' && entry.score === 1200));
+});
+
 test('server shutdown flushes pending leaderboard records before returning', async t => {
   const { createApp } = require('../server');
   const file = temporary(t);

@@ -4,7 +4,7 @@
   const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
   const mix = (a, b, t) => a + (b - a) * t;
 
-  function create({ canvas, resolve, onIncoming = () => {}, onHit = () => {}, onClear = () => {} }) {
+  function create({ canvas, resolve, onIncoming = () => {}, onHit = () => {}, onClear = () => {}, onBomb = () => {} }) {
     const ctx = canvas.getContext('2d');
     const motion = root.matchMedia('(prefers-reduced-motion: reduce)');
     const shakes = new Set();
@@ -126,8 +126,82 @@
       ctx.restore();
       label(incoming ? `${sourceName} 攻击你 +${lines} 行` : `${target.name} +${lines} 待接收`, x, y - 20 - progress * 18, color, 1 - progress);
     }
+    function drawBomb(effect, age) {
+      const target = anchor(effect.targetId);
+      if (!target) return;
+      const x = target.left + target.width / 2;
+      const y = target.top + target.height / 2;
+      const text = `${effect.targetId === selfId ? '你' : target.name || '玩家'} · 烫手山芋爆炸 +${effect.lines} 行`;
+      if (target.offscreen) { label(text, x, y, '#f7a75f'); return; }
+      const progress = clamp(age / 900, 0, 1);
+      const fade = 1 - progress;
+      ctx.save();
+      // Contain every particle and glow within the visible board / monitor clip.
+      ctx.beginPath();
+      ctx.rect(target.left, target.top, target.width, target.height);
+      ctx.clip();
+      if (motion.matches) {
+        halo({ left: target.left + 5, top: target.top + 5, width: target.width - 10, height: target.height - 10 }, '#f7a75f', .85);
+      } else {
+        ctx.globalAlpha = fade * .22;
+        ctx.fillStyle = '#f26845';
+        ctx.fillRect(target.left, target.top, target.width, target.height);
+        // Elliptical shock fronts reach both ends of even a tall, narrow board.
+        ctx.strokeStyle = '#f7a75f';
+        ctx.shadowColor = '#f26845';
+        ctx.shadowBlur = 12;
+        ctx.lineWidth = Math.max(3, target.width * .025);
+        for (let ring = 0; ring < 2; ring++) {
+          const radius = .12 + Math.sqrt(progress) * (1.2 - ring * .3);
+          ctx.globalAlpha = fade * (ring ? .45 : .9);
+          ctx.beginPath();
+          ctx.ellipse(x, y, target.width * radius, target.height * radius, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.shadowBlur = 0;
+        // Large, deterministic chunks remain legible on 90px opponent monitors.
+        for (let i = 0; i < 18; i++) {
+          const angle = i * Math.PI * 2 / 18;
+          const travel = .12 + progress * (.65 + i % 3 * .12);
+          const px = x + Math.cos(angle) * target.width * travel;
+          const py = y + Math.sin(angle) * target.height * travel + progress * progress * target.height * .15;
+          const size = Math.max(5, target.width * (.055 + i % 3 * .014));
+          ctx.save();
+          ctx.translate(px, py);
+          ctx.rotate(angle + progress * (i % 2 ? 3 : -3));
+          ctx.globalAlpha = fade;
+          ctx.fillStyle = i % 3 === 0 ? '#26354d' : i % 3 === 1 ? '#f26845' : '#f7a75f';
+          ctx.fillRect(-size / 2, -size / 2, size, size * 1.3);
+          ctx.restore();
+        }
+        for (let i = 0; i < 24; i++) {
+          const angle = i * Math.PI * 2 / 24;
+          const reach = .2 + progress * (.7 + i % 4 * .1);
+          ctx.globalAlpha = fade * .9;
+          ctx.strokeStyle = '#f7a75f';
+          ctx.lineWidth = Math.max(2, target.width * .008);
+          ctx.beginPath();
+          ctx.moveTo(x + Math.cos(angle) * target.width * reach * .8, y + Math.sin(angle) * target.height * reach * .8);
+          ctx.lineTo(x + Math.cos(angle) * target.width * reach, y + Math.sin(angle) * target.height * reach);
+          ctx.stroke();
+        }
+        ctx.fillStyle = '#69788e';
+        ctx.globalAlpha = Math.sin(progress * Math.PI) * .3;
+        for (let i = 0; i < 7; i++) {
+          const angle = i * Math.PI * 2 / 7;
+          ctx.beginPath();
+          ctx.arc(x + Math.cos(angle) * target.width * progress * .35,
+            y + Math.sin(angle) * target.height * progress * .3 - progress * target.height * .15,
+            Math.max(6, target.width * (.08 + progress * .12)), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+      label(text, x, y, '#f7a75f', motion.matches ? 1 : fade);
+    }
     function drawEffect(effect, now) {
       const age = now - effect.born;
+      if (effect.kind === 'bomb') { drawBomb(effect, age); return; }
       if (effect.kind === 'rescue') {
         const source = anchor(effect.sourceId);
         for (const item of effect.targets) {
@@ -302,7 +376,7 @@
       frame = null;
       resize();
       ctx.clearRect(0, 0, width, height);
-      active = active.filter(effect => now - effect.born < (motion.matches ? 720 : 1500));
+      active = active.filter(effect => now - effect.born < (effect.kind === 'bomb' ? 900 : motion.matches ? 720 : 1500));
       taps = taps.filter(tap => now - tap.born < (motion.matches ? 650 : 1050));
       for (const tap of taps) drawTap(tap, now);
       for (const effect of active) drawEffect(effect, now);
@@ -335,6 +409,12 @@
       const fresh = records.filter(record => record.id > lastId && now - record.at >= -250 && now - record.at < 2500);
       lastId = latest;
       for (const record of fresh) {
+        if (record.kind === 'bomb') {
+          onBomb(record);
+          active.push({ ...record, born: root.performance.now(), relevant: record.targetId === id });
+          if (active.length > 24) active.splice(Math.max(0, active.findIndex(item => !item.relevant)), 1);
+          continue;
+        }
         if (record.kind === 'rescue') {
           active.push({ ...record, born: root.performance.now(), relevant: record.sourceId === id || record.targets.some(target => target.targetId === id) });
           if (active.length > 24) active.shift();

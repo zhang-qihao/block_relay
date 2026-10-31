@@ -239,6 +239,65 @@ async function readyAndStart(clients) {
   return clients[0].wait(isState(value => value.status === 'playing'));
 }
 
+test('WebSocket bomb mode enforces clears, hides fuse and synchronizes transfers and explosions', async t => {
+  const { room, clients, ids, url } = await connectedRoom(t, { hotPotato: true, buffer: true }, 3);
+  const started = await readyAndStart(clients);
+  assert.deepEqual(Object.keys(started.room.bomb).sort(), ['cleared', 'holderId', 'lit']);
+  const first = ids.indexOf(room.bomb.holderId);
+  const holder = clients[first];
+  const player = room.players.get(ids[first]);
+  const receiverIndex = (first + 1) % ids.length;
+  clients[receiverIndex].send({ type: 'passBomb', cleared: 3 });
+  await clients[receiverIndex].wait(data => data.type === 'error' && data.message.includes('1 行'));
+  holder.send({ type: 'passBomb', cleared: 3 });
+  await holder.wait(data => data.type === 'error' && data.message.includes('1 行'));
+  setupClear(player.game, 1);
+  holder.send({ type: 'action', action: 'drop' });
+  await holder.wait(isState(value => value.bomb?.holderId === player.id && value.bomb.cleared === 1));
+  const fuse = room.bomb.explodesAt;
+  holder.send({ type: 'passBomb' });
+  const transferred = await holder.wait(isState(value => value.bomb?.holderId === ids[receiverIndex]));
+  assert.equal(transferred.room.bomb.cleared, 0);
+  assert.equal(room.bomb.explodesAt, fuse);
+  assert.equal(JSON.stringify(transferred.room).includes('explodesAt'), false);
+  const victim = room.players.get(ids[receiverIndex]);
+  const received = victim.game.received;
+  room.bomb.explodesAt = Date.now() - 1;
+  const exploded = await holder.wait(isState(value => value.effects.some(effect => effect.kind === 'bomb')));
+  const blast = exploded.room.effects.find(effect => effect.kind === 'bomb');
+  assert.equal(blast.targetId, victim.id);
+  assert.equal(blast.lines, 1);
+  assert.notEqual(exploded.room.bomb.holderId, victim.id);
+  const newHolderId = exploded.room.bomb.holderId;
+  assert.equal(victim.game.received, received + 1);
+  for (const peer of clients.filter(peer => peer !== holder)) {
+    const visible = await peer.wait(isState(value => value.effects.some(effect => effect.id === blast.id && effect.kind === 'bomb')));
+    assert.equal(visible.room.bomb.holderId, newHolderId);
+  }
+  const token = victim.token;
+  const closed = new Promise(resolve => clients[receiverIndex].ws.once('close', resolve));
+  clients[receiverIndex].ws.close(); await closed;
+  const resumed = await client(url);
+  resumed.send({ type: 'resume', token });
+  const restored = await resumed.wait(isState(value => value.bomb?.holderId === newHolderId));
+  assert.equal(restored.room.bomb.cleared, 0);
+  assert.deepEqual(Object.keys(restored.room.bomb).sort(), ['cleared', 'holderId', 'lit']);
+});
+
+test('WebSocket expired bomb explodes before accepting a late pass', async t => {
+  const { room, clients, ids } = await connectedRoom(t, { hotPotato: true }, 3);
+  await readyAndStart(clients);
+  const holderId = room.bomb.holderId;
+  room.bomb.cleared = 1;
+  room.bomb.explodesAt = Date.now() - 1;
+  const holder = clients[ids.indexOf(holderId)];
+  holder.send({ type: 'passBomb' });
+  await holder.wait(data => data.type === 'error' && data.message.includes('1 行'));
+  assert.equal(room.players.get(holderId).game.received, 1);
+  assert.notEqual(room.bomb.holderId, holderId);
+  assert.equal(room.bomb.cleared, 0);
+});
+
 test('WebSocket settings permissions, validation, ready reset and immutable in-game rules', async t => {
   const { room, clients: [a, b] } = await connectedRoom(t, { attack: 'round' }, 2);
   b.send({ type: 'settings', settings: { attack: 'all' } });
@@ -347,7 +406,7 @@ test('WebSocket practice allows single player and host stop, no attacks', async 
 });
 
 test('WebSocket environment garbage, purification, reconnect and rematch preserve settings', async t => {
-  const { room, clients, ids, url } = await connectedRoom(t, { mode: 'battle', digBonus: true });
+  const { room, clients, ids, url } = await connectedRoom(t, { mode: 'survival', randomGarbage: true, digBonus: true });
   await readyAndStart(clients);
   room.nextEnvironmentAt = Date.now() - 1;
   await clients[0].wait(isState(value => value.players[0].game.pending === 1));
@@ -373,7 +432,7 @@ test('WebSocket environment garbage, purification, reconnect and rematch preserv
   await clients[0].wait(isState(value => value.status === 'finished'));
   clients[0].send({ type: 'rematch' });
   const lobby = await clients[0].wait(isState(value => value.status === 'lobby'));
-  assert.equal(lobby.room.settings.mode, 'battle');
+  assert.equal(lobby.room.settings.mode, 'survival');
   assert.equal(lobby.room.settings.digBonus, true);
   assert.equal(lobby.room.outcome, null);
 });
@@ -393,7 +452,7 @@ test('WebSocket six-player teams handle departures and preserve complete result 
 });
 
 test('WebSocket countdown cancellation and expired disconnect clean up correctly', async t => {
-  const { app, room, clients: [a, b], ids } = await connectedRoom(t, { mode: 'battle' }, 2);
+  const { app, room, clients: [a, b], ids } = await connectedRoom(t, { mode: 'survival', randomGarbage: true }, 2);
   for (const player of [a, b]) player.send({ type: 'ready', ready: true });
   await a.wait(isState(value => value.players.every(player => player.ready)));
   a.send({ type: 'start' });
@@ -511,6 +570,26 @@ test('incoming packets retain source metadata through FIFO cancellation and envi
   ]);
 });
 
+test('changing attack distribution preserves preset and resets ready without changing fixed rules', async t => {
+  const { room, clients: [a, b] } = await connectedRoom(t, null, 2);
+  a.send({ type: 'preset', id: 'timed' });
+  await a.wait(isState(value => value.presetId === 'timed'));
+  a.send({ type: 'ready', ready: true });
+  await a.wait(isState(value => value.players[0].ready));
+  a.send({ type: 'settings', settings: { attack: 'manual' } });
+  const updated = await a.wait(isState(value => value.settings.attack === 'manual'));
+  assert.equal(updated.room.presetId, 'timed');
+  assert.equal(updated.room.settings.mode, 'timed');
+  assert.equal(updated.room.settings.duration, 180);
+  assert.ok(updated.room.players.every(player => !player.ready));
+  b.send({ type: 'settings', settings: { attack: 'all' } });
+  await b.wait(data => data.type === 'error' && data.message.includes('房主'));
+  assert.equal(room.settings.attack, 'manual');
+  a.send({ type: 'preset', id: 'sprint' });
+  await a.wait(isState(value => value.presetId === 'sprint'));
+  assert.equal(room.settings.attack, 'random');
+});
+
 test('WebSocket presets are host-only, reset ready, mark custom and retain chosen settings', async t => {
   const { room, clients: [a, b] } = await connectedRoom(t, null, 2);
   b.send({ type: 'preset', id: 'dig' });
@@ -525,7 +604,7 @@ test('WebSocket presets are host-only, reset ready, mark custom and retain chose
   a.send({ type: 'preset', id: 'dig' });
   await a.wait(isState(value => value.presetId === 'dig' && value.players[0].ready));
   a.send({ type: 'settings', settings: { digRows: 4, cleanse: true } });
-  await a.wait(isState(value => value.presetId === 'custom' && value.settings.digRows === 4));
+  await a.wait(isState(value => value.presetId === 'dig' && value.settings.digRows === 4));
   assert.equal(room.settings.cleanse, false);
   await readyAndStart([a, b]);
   a.send({ type: 'preset', id: 'friends' });
@@ -674,8 +753,8 @@ test('public room directory follows lifecycle without exposing sessions or board
   assert.equal(entry.hostName, '房主');
   assert.equal(entry.players, 2);
   assert.equal(entry.joinable, true);
-  a.send({ type: 'preset', id: 'duel' });
-  await visitor.wait(data => data.type === 'roomList' && data.rooms[0].presetId === 'duel');
+  a.send({ type: 'preset', id: 'sprint' });
+  await visitor.wait(data => data.type === 'roomList' && data.rooms[0].presetId === 'sprint');
   await readyAndStart([a, b]);
   const running = await visitor.wait(data => data.type === 'roomList' && data.rooms[0].status === 'playing');
   assert.equal(running.rooms[0].joinable, false);

@@ -279,7 +279,7 @@ test('start conditions and balanced team sizes', () => {
   assert.match(Match.startError(single), /2/);
 });
 
-for (const mode of ['survival', 'sprint', 'battle', 'timed']) {
+for (const mode of ['survival', 'sprint', 'timed']) {
   test(`${mode}: last survivor wins and all-eliminated state finishes`, () => {
     const room = fixture({ mode });
     for (const player of room.players.values()) if (player.id !== '0') player.game.alive = false;
@@ -328,8 +328,8 @@ test('teams win as a team including already eliminated teammates', () => {
   assert.ok(room.outcome.results.filter(player => player.team === 'red').every(player => player.rank === 1));
 });
 
-test('battle queues environment garbage at thirty-second intervals only', () => {
-  const room = fixture({ mode: 'battle' });
+test('randomGarbage queues environment garbage at thirty-second intervals only', () => {
+  const room = fixture({ mode: 'survival', randomGarbage: true });
   Match.advanceMatch(room, 30999);
   assert.equal(room.players.get('0').game.pending, 0);
   Match.advanceMatch(room, 31000);
@@ -354,11 +354,12 @@ test('practice continues with one survivor and can be ended manually', () => {
 });
 
 test('new round resets garbage, energy, outcome, target cursors and timers', () => {
-  const room = fixture({ mode: 'battle' });
+  const room = fixture({ mode: 'survival', randomGarbage: true });
   room.players.get('0').game.energy = 12;
   enqueueGarbage(room.players.get('0').game, 10);
   room.outcome = { reason: 'old' };
   room.settings.mode = 'practice';
+  room.settings.randomGarbage = false;
   Match.beginMatch(room, 7, 2000, 100);
   const game = room.players.get('0').game;
   assert.equal(game.energy, 0);

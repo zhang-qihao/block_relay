@@ -17,6 +17,8 @@ function fixture(reduced = false) {
   const incoming = [];
   const hits = [];
   const clears = [];
+  const bombs = [];
+  const clips = {};
   const ctx = new Proxy({}, {
     get: (target, name) => name === 'measureText' ? value => ({ width: value.length * 10 }) :
       (...args) => calls.push({ name, args, color: target.fillStyle, stroke: target.strokeStyle }),
@@ -51,7 +53,8 @@ function fixture(reduced = false) {
     onIncoming: attack => incoming.push(attack),
     onHit: hit => hits.push(hit),
     onClear: clear => clears.push(clear),
-    resolve(id) { resolved.push(id); return elements[id] ? { element: elements[id], name: id } : null; },
+    onBomb: bomb => bombs.push(bomb),
+    resolve(id) { resolved.push(id); return elements[id] ? { element: elements[id], name: id, clip: clips[id] } : null; },
   });
   function frame(at) {
     time = at;
@@ -65,7 +68,7 @@ function fixture(reduced = false) {
     return { id, sourceId, targets, rows: [row], cancelled: 0, at: 1000 };
   }
   controller.sync(room, 'self', 1000);
-  return { controller, calls, resolved, frames, frame, rects, room, event, document, listeners, animations, incoming, hits, clears };
+  return { controller, calls, resolved, frames, frame, rects, room, event, document, listeners, animations, incoming, hits, clears, bombs, clips };
 }
 
 test('effects play outgoing/incoming and third-party attacks using player board anchors', () => {
@@ -243,6 +246,126 @@ test('immediate spectator messages render every click without snapshot truncatio
   assert.equal(f.calls.filter(call => call.name === 'clip').length, 100);
   f.controller.interact({ id: 100, sourceName: '观众', targetId: 'self', effect: 'glass', x: .5, y: .5 });
   f.frame(2200);
+  assert.equal(f.frames.size, 0);
+});
+
+for (const targetId of ['self', 'other']) {
+  test(`bomb fills the ${targetId} board with clipped shock rings, chunks, sparks and smoke`, () => {
+    const f = fixture();
+    const bomb = { kind: 'bomb', id: 1, at: 1000, targetId, lines: 3 };
+    f.room.effects = [bomb];
+    f.controller.sync(f.room, 'self', 1000);
+    assert.deepEqual(f.bombs, [bomb]);
+    assert.equal(f.hits.length + f.incoming.length + f.clears.length, 0);
+    f.frame(1200);
+    const rect = f.rects[targetId];
+    assert.ok(f.resolved.includes(targetId));
+    assert.ok(f.calls.some(call => call.name === 'rect' && call.args.join() === [rect.left, rect.top, rect.width, rect.height].join()));
+    assert.equal(f.calls.filter(call => call.name === 'clip').length, 1);
+    assert.equal(f.calls.filter(call => call.name === 'ellipse').length, 2);
+    assert.equal(f.calls.filter(call => call.name === 'translate').length, 18);
+    assert.equal(f.calls.filter(call => call.name === 'lineTo').length, 24);
+    assert.equal(f.calls.filter(call => call.name === 'arc').length, 7);
+    assert.ok(f.calls.some(call => call.name === 'fillRect' && call.color === '#f26845' && call.args.join() === [rect.left, rect.top, rect.width, rect.height].join()));
+    assert.ok(f.calls.some(call => call.name === 'fillText' && call.args[0].includes('烫手山芋爆炸 +3 行')));
+    assert.ok(!f.calls.some(call => call.color === '#ffffff'));
+    assert.equal(f.animations.length, 0, 'explosion never changes or animates board DOM');
+    f.frame(1899);
+    assert.equal(f.frames.size, 1);
+    f.frame(1900);
+    assert.equal(f.frames.size, 0, 'bomb ends after 900ms');
+    f.controller.sync(f.room, 'self', 1000);
+    assert.equal(f.bombs.length, 1);
+    assert.equal(f.frames.size, 0);
+  });
+}
+
+test('bomb respects partial monitor clips and handles missing/offscreen targets', () => {
+  const f = fixture();
+  f.clips.other = { getBoundingClientRect: () => ({ left: 730, top: 210, right: 780, bottom: 370 }) };
+  f.room.effects = [{ kind: 'bomb', id: 1, at: 1000, targetId: 'other', lines: 3 }];
+  f.controller.sync(f.room, 'self', 1000);
+  f.frame(1200);
+  assert.ok(f.calls.some(call => call.name === 'rect' && call.args.join() === '730,210,50,160'));
+  f.controller.clear();
+  assert.equal(f.frames.size, 0);
+  f.calls.length = 0;
+  f.rects.third = { left: 1300, top: 900, right: 1390, bottom: 1080, width: 90, height: 180 };
+  f.room.effects = ['third', 'missing'].map((targetId, index) => ({ kind: 'bomb', id: index + 2, at: 1000, targetId, lines: 3 }));
+  f.controller.sync(f.room, 'self', 1000);
+  assert.doesNotThrow(() => f.frame(1300));
+  assert.equal(f.calls.filter(call => call.name === 'ellipse').length, 0);
+  assert.ok(f.calls.some(call => call.name === 'fillText' && call.args[0].includes('third')));
+});
+
+test('reduced motion bomb uses a static halo and text, clear removes its overlay', () => {
+  const f = fixture(true);
+  f.room.effects = [{ kind: 'bomb', id: 1, at: 1000, targetId: 'self', lines: 3 }];
+  f.controller.sync(f.room, 'self', 1000);
+  f.calls.length = 0;
+  f.frame(1100);
+  const geometry = () => f.calls.map(({ name, args }) => ({ name, args }));
+  const first = geometry();
+  f.calls.length = 0;
+  f.frame(1500);
+  assert.deepEqual(geometry(), first, 'reduced feedback remains static throughout its lifetime');
+  assert.equal(f.calls.filter(call => call.name === 'strokeRect').length, 1);
+  assert.equal(f.calls.filter(call => ['translate', 'rotate', 'ellipse', 'arc'].includes(call.name)).length, 0);
+  assert.equal(f.animations.length, 0);
+  assert.equal(f.bombs.length, 1);
+  f.controller.clear();
+  assert.equal(f.frames.size, 0);
+  assert.equal(f.calls.at(-1).name, 'clearRect');
+  f.controller.sync(f.room, 'self', 1000);
+  assert.equal(f.frames.size, 0);
+});
+
+test('bomb history, expired events, hidden snapshots and round transitions never replay', () => {
+  const f = fixture();
+  const bomb = (id, at = 1000) => ({ kind: 'bomb', id, at, targetId: 'self', lines: 3 });
+  f.controller.clear(true);
+  f.room.effects = [bomb(1)];
+  f.controller.sync(f.room, 'self', 1000);
+  assert.equal(f.bombs.length, 0, 'reconnect establishes history baseline');
+  f.room.effects.push(bomb(2));
+  f.controller.sync(f.room, 'self', 3500);
+  f.controller.sync(f.room, 'self', 1000);
+  assert.equal(f.bombs.length, 0, 'expired event stays consumed');
+  f.document.hidden = true;
+  f.room.effects.push(bomb(3));
+  f.controller.sync(f.room, 'self', 1000);
+  f.document.hidden = false;
+  f.controller.sync(f.room, 'self', 1000);
+  assert.equal(f.bombs.length, 0);
+  f.room.roundId++;
+  f.room.effects = [bomb(1)];
+  f.controller.sync(f.room, 'self', 1000);
+  assert.equal(f.bombs.length, 0);
+  f.room.effects.push(bomb(2));
+  f.controller.sync(f.room, 'self', 1000);
+  assert.equal(f.bombs.length, 1);
+  f.frame(1100);
+  f.document.hidden = true;
+  f.listeners.visibilitychange();
+  assert.equal(f.frames.size, 0);
+  assert.equal(f.calls.at(-1).name, 'clearRect');
+  f.document.hidden = false;
+  f.room.status = 'lobby';
+  f.room.effects.push(bomb(3));
+  f.controller.sync(f.room, 'self', 1000);
+  assert.equal(f.bombs.length, 1);
+});
+
+test('a bomb that finishes the round still renders and notifies only once', () => {
+  const f = fixture();
+  f.room.status = 'finished';
+  f.room.effects = [{ kind: 'bomb', id: 1, at: 1000, targetId: 'self', lines: 3 }];
+  f.controller.sync(f.room, 'self', 1000);
+  f.controller.sync(f.room, 'self', 1000);
+  assert.equal(f.bombs.length, 1);
+  f.frame(1200);
+  assert.equal(f.calls.filter(call => call.name === 'ellipse').length, 2);
+  f.frame(1900);
   assert.equal(f.frames.size, 0);
 });
 

@@ -9,6 +9,7 @@ const { WebSocketServer, WebSocket } = require('ws');
 const { act, tickGame, snapshotGame, enqueueGarbage } = require('./game');
 const Rules = require('./public/rules');
 const Match = require('./match');
+const Bomb = require('./bomb');
 const { createLeaderboard } = require('./leaderboard');
 
 const MAX_PLAYERS = 6;
@@ -24,6 +25,7 @@ const FILES = {
   '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
   '/favicon.png': ['favicon.png', 'image/png'],
   '/mascot.png': ['mascot.png', 'image/png'],
+  '/bomb.svg': ['bomb.svg', 'image/svg+xml'],
 };
 
 function lanAddresses(port) {
@@ -118,7 +120,7 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
       type: 'state', room: {
         code: room.code, hostId: room.hostId, status: room.status,
         startsAt: room.startsAt, events: room.events, serverNow: now,
-        roundId: room.roundId, effects: room.effects, interactions: room.interactions,
+        roundId: room.roundId, effects: room.effects, interactions: room.interactions, bomb: Bomb.snapshot(room),
         settings: room.settings, presetId: room.presetId, wave: room.wave, nextWaveAt: room.nextWaveAt, coopEndsAt: room.coopEndsAt,
         deadline: room.deadline, nextEnvironmentAt: room.nextEnvironmentAt,
         bountyId: room.bountyId, nextBountyAt: room.nextBountyAt, outcome: room.outcome,
@@ -134,7 +136,15 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
     room.dirty = false;
   }
   function finishIfNeeded(room, now = Date.now()) {
-    if (room.status === 'playing') recordEliminations(room);
+    if (room.status === 'playing') {
+      const explosion = Bomb.advance(room, now);
+      if (explosion) {
+        room.effects.push({ ...explosion, id: ++room.effectId });
+        event(room, `${explosion.targetName} 的炸弹爆炸，立即增加 1 行！`, 'hit');
+        recordScore(room.players.get(explosion.targetId));
+      }
+      recordEliminations(room);
+    }
     if (Match.evaluateMatch(room, now)) {
       for (const player of room.participants) recordScore(player);
       event(room, room.outcome.reason, 'win');
@@ -147,6 +157,7 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
     }
   }
   function applyResult(room, player, result, now) {
+    Bomb.credit(room, player, result.cleared);
     if (result.locked || !player.game?.alive) recordScore(player);
     if (result.changed) room.dirty = true;
     if (result.cancelled) event(room, `${player.name} 抵消 ${result.cancelled} 行待接收障碍。`, 'defense');
@@ -179,6 +190,7 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
     for (const player of room.players.values()) player.ready = false;
   }
   function clearMatch(room) {
+    room.bomb = null;
     room.status = 'lobby';
     room.startsAt = null;
     room.deadline = null;
@@ -345,7 +357,7 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
         if (!settings) { fail(ws, '规则设置无效。'); return; }
         if (JSON.stringify(settings) !== JSON.stringify(room.settings)) {
           room.settings = settings;
-          room.presetId = 'custom';
+          if (Object.hasOwn(data.settings, 'mode') && Rules.presets[room.presetId]?.settings.mode !== settings.mode) room.presetId = 'custom';
           invalidateReady(room);
           event(room, '房主修改了规则，请所有玩家重新准备。');
         }
@@ -375,7 +387,7 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
         room.roundId++;
         room.effects = [];
         room.interactions = [];
-        event(room, `即将开始：${Rules.modes[room.settings.mode][0]} / ${room.settings.mode === 'practice' ? '无攻击' : Rules.attacks[room.settings.attack][0]}`);
+        event(room, `即将开始：${Rules.modes[room.settings.mode][0]} / ${!Rules.hostile(room.settings) ? '无玩家攻击' : Rules.attacks[room.settings.attack][0]}`);
         broadcast(room);
       } else if (data.type === 'spectatorTap') {
         const reject = text => send(ws, { type: 'tapError', message: text });
@@ -392,6 +404,11 @@ function createApp({ countdownMs = 5000, leaderboard = createLeaderboard() } = {
         for (const member of room.players.values()) send(member.ws, {
           type: 'spectatorInteraction', code: room.code, roundId: room.roundId, interaction,
         });
+      } else if (data.type === 'passBomb') {
+        const target = Bomb.pass(room, player, now);
+        if (!target) { fail(ws, '持有炸弹并累计消除 1 行后才能传递。'); return; }
+        event(room, `${player.name} 把炸弹传给了 ${target.name}。`, 'attack');
+        broadcast(room);
       } else if (data.type === 'action' && room.status === 'playing' && ACTIONS.has(data.action)) {
         applyResult(room, player, act(player.game, data.action, now), now);
         recordEliminations(room);

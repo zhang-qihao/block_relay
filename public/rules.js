@@ -19,14 +19,15 @@
   const modes = {
     survival: ['经典生存', '最后存活的玩家获胜。'],
     timed: ['限时竞赛', '时间到后存活者优先，再比较消行和分数；完全并列共享名次。'],
-    sprint: ['消行竞速', '首个达到目标行数且未淘汰的玩家获胜，也可通过最后存活获胜。'],
+    sprint: ['消行竞速', '无玩家攻击；首个达到目标行数且未淘汰的玩家获胜，也可通过最后存活获胜。'],
     teams: ['团队对抗', '红蓝两队人数相等，只攻击敌方，最后有存活成员的队伍获胜。'],
-    battle: ['绝地求生', '每 30 秒全员额外收到一行可抵消的环境垃圾，最后存活者获胜。'],
     practice: ['和平练习', '无玩家攻击，可单人开局；所有人淘汰或房主结束时结算。'],
     dig: ['挖掘挑战', '同样的障碍开局，先挖干净者获胜；无攻击、无净化，可单人挑战。'],
     coop: ['合作守城', '全员合作抵御障碍波次，消行先自保再帮助队友；末波后坚持 20 秒过关。'],
   };
   const toggles = {
+    hotPotato: ['烫手山芋', '至少两位存活玩家时生成炸弹；持有期间累计消 1 行后主动传递，爆炸加 1 行，新炸弹随机交给另一位存活玩家，不改变原玩法胜利条件。'],
+    randomGarbage: ['乱扔垃圾', '每 30 秒给所有存活玩家增加 1 行环境障碍，可抵消或净化；不改变胜利条件。'],
     packetHole: ['同包同缺口', '同一包障碍共用缺口，更容易挖掘；关闭后逐行随机。'],
     counter: ['攻击抵消', '消行攻击先抵消待接收垃圾，剩余才发给对手。'],
     combo: ['连击奖励', '连续消行从第二次起奖励 1 行，最多额外 3 行；未消行重置。'],
@@ -36,16 +37,14 @@
     cleanse: ['能量净化', '实际消行积攒能量，6 点可在下次锁定净化最多两条障碍行。'],
   };
   const defaults = Object.freeze({
-    mode: 'survival', attack: 'round', duration: 180, goal: 40, digRows: 8, waves: 5, packetHole: true,
-    counter: true, combo: false, buffer: true, cooldown: false, digBonus: false, cleanse: true,
+    mode: 'survival', attack: 'random', duration: 180, goal: 40, digRows: 8, waves: 5, packetHole: true,
+    counter: true, combo: false, buffer: true, cooldown: false, digBonus: false, cleanse: true, randomGarbage: false, hotPotato: false,
   });
   const presets = {
-    friends: { name: '好友乱斗', settings: { ...defaults, attack: 'random' } },
-    duel: { name: '点名对决', settings: { ...defaults, attack: 'manual' } },
+    friends: { name: '好友乱斗', settings: { ...defaults } },
     timed: { name: '三分钟挑战', settings: { ...defaults, mode: 'timed' } },
     sprint: { name: '消行竞速', settings: { ...defaults, mode: 'sprint' } },
     teams: { name: '团队对抗', settings: { ...defaults, mode: 'teams' } },
-    battle: { name: '极限生存', settings: { ...defaults, mode: 'battle' } },
     dig: { name: '挖掘挑战', settings: { ...defaults, mode: 'dig', cleanse: false, counter: false } },
     coop: { name: '合作守城', settings: { ...defaults, mode: 'coop', counter: true } },
     practice: { name: '自由练习', settings: { ...defaults, mode: 'practice' } },
@@ -54,7 +53,7 @@
     if (typeof value !== 'string') return '';
     return Array.from(value.replace(/[\x00-\x1f\x7f]/g, '').trim().normalize('NFC')).slice(0, 12).join('').trim();
   }
-  function hostile(settings) { return !['practice', 'dig', 'coop'].includes(settings.mode); }
+  function hostile(settings) { return !['practice', 'dig', 'coop', 'sprint'].includes(settings.mode); }
   function previousOpponent(players, playerId, settings) {
     if (!hostile(settings)) return null;
     const index = players.findIndex(player => player.id === playerId);
@@ -76,13 +75,15 @@
     let goal = modes[settings.mode][1];
     if (settings.mode === 'dig') goal = `先清除开局 ${settings.digRows} 行障碍；无攻击、无净化。`;
     if (settings.mode === 'coop') goal = `全员顶住 ${settings.waves} 波，末波后坚持 20 秒过关。`;
-    if (settings.mode === 'sprint') goal = `率先消除 ${settings.goal} 行，或成为最后存活者。`;
+    if (settings.mode === 'sprint') goal = `无玩家攻击；率先消除 ${settings.goal} 行，或成为最后存活者。`;
     if (settings.mode === 'timed') goal = `${settings.duration / 60} 分钟内比消行，存活者优先，同消行比分数。`;
     const behavior = settings.mode === 'coop' ? '消行先自保，余量自动救援队友' : hostile(settings) ? attacks[settings.attack][0] : '无玩家攻击';
     const defense = [behavior];
     if (hostile(settings) && settings.counter) defense.push('抵消开启');
     if ((hostile(settings) || settings.mode === 'coop') && settings.buffer) defense.push('2 秒缓冲');
     if (settings.cleanse && settings.mode !== 'dig') defense.push('6 能量净化');
+    if (settings.randomGarbage) defense.push('乱扔垃圾');
+    if (settings.hotPotato) defense.push('烫手山芋');
     return [goal, defense.join(' · ')];
   }
   function validate(current, patch) {

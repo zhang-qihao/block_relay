@@ -173,8 +173,53 @@ test('packet-hole setting groups garbage without affecting fair piece sequence',
   assert.deepEqual(game.queue, plain.queue);
 });
 
-test('all nine presets validate and changing mode enforces non-negotiable rules', () => {
-  assert.equal(Object.keys(Rules.presets).length, 9);
+test('sprint never emits opponent attacks but can cancel optional environment garbage', () => {
+  const room = roomFor('sprint', 2, { randomGarbage: true });
+  const player = room.players.get('0');
+  const game = player.game;
+  game.board[19] = Array.from({ length: 10 }, (_, x) => x === 4 ? null : 'J');
+  game.active = { type: 'I', matrix: [[1], [1], [1], [1]], x: 4, y: 0 };
+  enqueueGarbage(game, 1, 1000);
+  const result = act(game, 'drop', 1000);
+  assert.equal(result.cleared, 1);
+  assert.equal(result.cancelled, 1);
+  assert.equal(result.attack, 0);
+  assert.deepEqual(Match.routeAttack(room, player, 4), []);
+});
+
+test('random garbage is an optional rule for every mode with independent schedule', () => {
+  assert.equal(Rules.presets.duel, undefined);
+  assert.equal(Rules.presets.battle, undefined);
+  assert.equal(Rules.modes.battle, undefined);
+  assert.equal(Rules.defaults.randomGarbage, false);
+  for (const mode of Object.keys(Rules.modes)) {
+    const off = roomFor(mode);
+    assert.equal(off.nextEnvironmentAt, null);
+    const room = roomFor(mode, 2, { randomGarbage: true });
+    assert.equal(room.nextEnvironmentAt, 31000);
+    const before = room.players.get('0').game.pending;
+    Match.advanceMatch(room, 30999);
+    const pending = room.players.get('0').game.pending;
+    Match.advanceMatch(room, 31000);
+    assert.equal(room.players.get('0').game.pending, pending + 1, mode);
+    assert.ok(pending >= before);
+    assert.equal(room.players.get('0').game.garbage.at(-1).sourceName, '乱扔垃圾');
+    assert.equal(room.nextEnvironmentAt, 61000);
+  }
+  assert.equal(Rules.validate(Rules.defaults, { randomGarbage: 'true' }), null);
+});
+
+test('all presets default to random attacks while custom routing remains selectable', () => {
+  assert.equal(Rules.defaults.attack, 'random');
+  for (const [id, preset] of Object.entries(Rules.presets)) {
+    assert.equal(preset.settings.attack, 'random', id);
+    assert.equal(Rules.validate(preset.settings, { attack: 'manual' }).attack, 'manual');
+  }
+  for (const mode of ['practice', 'dig', 'coop', 'sprint']) assert.equal(Rules.hostile({ ...Rules.defaults, mode }), false);
+});
+
+test('all presets validate and changing mode enforces non-negotiable rules', () => {
+  assert.equal(Object.keys(Rules.presets).length, 7);
   for (const preset of Object.values(Rules.presets)) assert.deepEqual(Rules.validate(Rules.defaults, preset.settings), preset.settings);
   const dig = Rules.validate(Rules.defaults, { mode: 'dig', cleanse: true });
   assert.equal(dig.cleanse, false);

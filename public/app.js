@@ -70,7 +70,7 @@ let chatUnread = 0;
 let chatCollapsed = window.innerWidth <= 1250;
 let chatHeightRoom = null;
 function alignChatHeight() {
-  if (!state.room || state.room.status !== 'lobby' || window.innerWidth <= 1250 || $('customRules').open) return;
+  if (!state.room || state.room.status !== 'lobby' || window.innerWidth <= 1250) return;
   const height = $('waitingPanel').getBoundingClientRect().height;
   if (height > 0) $('chatPanel').style.setProperty('--chat-height', `${Math.ceil(height)}px`);
 }
@@ -271,6 +271,11 @@ const battleEffects = window.BlockEffects.create({
   canvas: $('battleEffects'),
   onIncoming: receiveAttack,
   onHit: receiveHit,
+  onBomb: effect => {
+    audio.play('bomb');
+    text('eventTicker', `${effect.targetName || '玩家'} 的炸弹爆炸 · +${effect.lines} 行`);
+    $('eventTicker').dataset.kind = 'hit';
+  },
   onClear: effect => audio.play('clear', effect.rows.length),
   resolve(id) {
     const player = state.room?.players.find(item => item.id === id);
@@ -386,6 +391,7 @@ function connect() {
       text('spectatorHint', data.message);
     } else if (data.type === 'error') {
       if ($('roomFinder').open) text('roomFinderError', data.message);
+      if ($('ruleOptionsDialog').open) { text('ruleOptionsMessage', data.message); renderRuleOptions(); }
       message(data.message);
     } else if (data.type === 'resumeFailed' || data.type === 'left') {
       saved('block-relay-token', null);
@@ -395,6 +401,8 @@ function connect() {
   });
   ws.addEventListener('close', () => {
     state.connected = false;
+    renderRuleOptions();
+    renderBomb();
     pendingChat = null;
     chatControls();
     renderDirectory();
@@ -427,11 +435,14 @@ function resetRoom() {
   battleEffects.clear(true);
   stopRepeat();
   state.room = null;
+  closeRuleOptions();
+  renderBomb();
   chatHeightRoom = null;
   closeRoomFinder();
   clearChat();
   document.body.classList.remove('controls-visible');
   document.body.classList.remove('match-visible');
+  document.body.classList.remove('waiting-visible');
   state.id = null;
   state.lastEvent = 0;
   monitors.clear();
@@ -461,7 +472,6 @@ function render() {
   if (!room || !self) return;
   if (chatHeightRoom !== room.code) {
     chatHeightRoom = room.code;
-    $('customRules').open = false;
     $('chatPanel').style.removeProperty('--chat-height');
   }
   if (chatCode !== room.code) { clearChat(); chatCode = room.code; receiveChat([], true); }
@@ -473,6 +483,8 @@ function render() {
   show($('lobbyView'), false);
   show($('roomView'), true);
   const waiting = room.status === 'lobby';
+  document.body.classList.toggle('waiting-visible', waiting);
+  if (!waiting) closeRuleOptions();
   show($('waitingPanel'), waiting);
   show($('gamePanel'), !waiting);
   show($('finishOverlay'), room.status === 'finished');
@@ -481,6 +493,7 @@ function render() {
   text('playerCountLabel', `${room.players.length} / 6 位玩家`);
   text('readyCountLabel', `${room.players.filter(player => player.ready && player.connected).length} 已准备`);
   if (waiting) {
+    renderBomb();
     resetReserve();
     clearIncoming();
     show($('countdownModal'), false);
@@ -524,65 +537,95 @@ function setupSettings() {
     const option = element('option', '', preset.name);
     option.value = id;
     return option;
-  }), Object.assign(element('option', '', '自定义'), { value: 'custom', disabled: true }));
+  }));
   $('presetSelect').addEventListener('change', event => send({ type: 'preset', id: event.target.value }));
-  for (const [id, entries] of [['modeSelect', Rules.modes], ['attackSelect', Rules.attacks]]) {
-    $(id).replaceChildren(...Object.entries(entries).map(([value, [name]]) => {
-      const option = element('option', '', name);
-      option.value = value;
-      return option;
-    }));
+  $('attackSelect').replaceChildren(...Object.entries(Rules.attacks).map(([value, [name]]) => {
+    const option = element('option', '', name);
+    option.value = value;
+    return option;
+  }));
+  $('attackSelect').addEventListener('change', event => send({ type: 'settings', settings: { attack: event.target.value } }));
+  function changeOption(key, value) {
+    const room = state.room;
+    if (!state.connected || room?.status !== 'lobby' || room.hostId !== state.id) { renderRuleOptions(); return; }
+    text('ruleOptionsMessage', '');
+    send({ type: 'settings', settings: { [key]: value } });
+  }
+  for (const key of Object.keys(ruleNumbers)) {
+    $(key + 'Select').addEventListener('change', event => changeOption(key, Number(event.target.value)));
   }
   for (const [key, [name, description]] of Object.entries(Rules.toggles)) {
     const label = element('label', 'rule-toggle');
     const input = document.createElement('input');
     input.type = 'checkbox';
-    input.dataset.setting = key;
+    input.dataset.option = key;
+    input.addEventListener('change', () => changeOption(key, input.checked));
     const copy = element('span', '');
     copy.append(element('strong', '', name), element('small', '', description));
     label.append(input, copy);
     $('ruleToggles').append(label);
   }
-  document.querySelectorAll('[data-setting]').forEach(input => {
-    input.addEventListener('change', () => {
-      const value = input.type === 'checkbox' ? input.checked : ['duration', 'goal', 'digRows', 'waves'].includes(input.dataset.setting) ? Number(input.value) : input.value;
-      send({ type: 'settings', settings: { [input.dataset.setting]: value } });
-    });
-  });
+}
+const ruleNumbers = { duration: ['timed', '比赛时长', value => `${value / 60} 分钟`], goal: ['sprint', '目标消行', value => `${value} 行`], digRows: ['dig', '初始障碍', value => `${value} 行`], waves: ['coop', '目标波数', value => `${value} 波`] };
+function ruleApplies(key, settings) {
+  if (key === 'randomGarbage' || key === 'hotPotato') return true;
+  if (settings.mode === 'sprint') return ['packetHole', 'counter', 'buffer', 'digBonus', 'cleanse'].includes(key);
+  if (settings.mode === 'dig') return false;
+  if (settings.mode === 'practice') return key === 'cleanse';
+  if (settings.mode === 'coop' && ['cooldown', 'combo', 'digBonus'].includes(key)) return false;
+  return key !== 'cooldown' || settings.attack === 'manual';
+}
+function closeRuleOptions() {
+  if ($('ruleOptionsDialog').open) $('ruleOptionsDialog').close();
+}
+function renderRuleOptions() {
+  const room = state.room;
+  if (!room || room.status !== 'lobby') { closeRuleOptions(); return; }
+  const settings = room.settings;
+  const editable = state.connected && room.hostId === state.id;
+  const tags = [];
+  text('ruleOptionsHint', !state.connected ? '连接中断，重连后可继续选配。' : editable ? '修改即时生效，所有玩家需要重新准备。更换玩法恢复默认配置。' : '房主设置 · 只读');
+  for (const [key, [mode, name, format]] of Object.entries(ruleNumbers)) {
+    const visible = settings.mode === mode;
+    show($(key + 'Field'), visible);
+    $(key + 'Select').value = settings[key];
+    $(key + 'Select').disabled = !editable || !visible;
+    if (visible) tags.push(`${name}：${format(settings[key])}`);
+  }
+  for (const input of $('ruleToggles').children) {
+    const checkbox = input.children[0];
+    const key = checkbox.dataset.option;
+    const visible = ruleApplies(key, settings);
+    const fixed = key === 'counter' && settings.mode === 'coop';
+    show(input, visible);
+    checkbox.checked = settings[key];
+    checkbox.disabled = !editable || !visible || fixed;
+    if (visible) tags.push(`${Rules.toggles[key][0]}：${settings[key] ? '开' : '关'}${fixed ? '（固定）' : ''}`);
+  }
+  $('ruleTags').replaceChildren(...tags.map(value => {
+    const tag = element('span', 'rule-tag', value);
+    tag.setAttribute('role', 'listitem');
+    return tag;
+  }));
 }
 function renderSettings(self) {
   const settings = state.room.settings;
   const host = self.id === state.room.hostId;
-  const practice = settings.mode === 'practice';
   const hostile = Rules.hostile(settings);
   const coop = settings.mode === 'coop';
-  const [goal, summary] = Rules.summary(settings);
-  $('presetSelect').value = state.room.presetId || 'custom';
+  const [goal] = Rules.summary(settings);
+  $('presetSelect').value = Object.hasOwn(Rules.presets, state.room.presetId) ? state.room.presetId :
+    Object.keys(Rules.presets).find(id => Rules.presets[id].settings.mode === settings.mode) || '';
   $('presetSelect').disabled = !host;
   text('presetGoal', goal);
-  text('presetSummary', summary);
   text('settingsPermission', host ? '你是房主，可修改' : '房主设置 · 只读');
-  text('modeDescription', Rules.modes[settings.mode][1]);
   text('attackDescription', coop ? '所有人都是队友，余量自动救援。' : !hostile ? '本局不发送攻击。' : Rules.attacks[settings.attack][1]);
   show($('attackSelect').parentElement, hostile);
-  show($('durationField'), settings.mode === 'timed');
-  show($('goalField'), settings.mode === 'sprint');
-  show($('digRowsField'), settings.mode === 'dig');
-  show($('wavesField'), coop);
   show($('teamField'), settings.mode === 'teams');
   $('teamSelect').value = self.team;
-  document.querySelectorAll('[data-setting]').forEach(input => {
-    const key = input.dataset.setting;
-    if (input.type === 'checkbox') input.checked = settings[key];
-    else input.value = settings[key];
-    let irrelevant = false;
-    if (input.type === 'checkbox') {
-      irrelevant = settings.mode === 'dig' || (practice && key !== 'cleanse') ||
-        (coop && ['counter', 'cooldown'].includes(key)) || (key === 'cooldown' && settings.attack !== 'manual');
-      show(input.parentElement, !irrelevant);
-    }
-    input.disabled = !host || irrelevant || (key === 'attack' && !hostile);
-  });
+  $('attackSelect').value = settings.attack;
+  $('attackSelect').disabled = !host || !hostile || !state.connected;
+  renderRuleOptions();
 }
 
 function renderWaiting(self) {
@@ -689,6 +732,50 @@ function renderPiece(id, type) {
   container.replaceChildren(canvas);
 }
 
+function decorateBomb(badge) {
+  const art = element('img', 'bomb-art');
+  art.src = '/bomb.svg';
+  art.alt = '';
+  art.width = 96;
+  art.height = 108;
+  badge.append(art, element('span', 'bomb-sparks'), element('span', 'bomb-caption'));
+  return badge;
+}
+
+function renderBomb() {
+  const bomb = state.room?.bomb;
+  const enabled = state.room?.settings.hotPotato && state.room.status === 'playing';
+  const own = enabled && bomb?.holderId === state.id;
+  const holder = state.room?.players.find(player => player.id === bomb?.holderId);
+  document.body.classList.toggle('bomb-visible', Boolean(enabled));
+  show($('bombPanel'), enabled);
+  show($('mainBombBadge'), Boolean(own));
+  const lit = Boolean(state.connected && bomb?.lit);
+  $('mainBombBadge').classList.toggle('is-lit', Boolean(own && lit));
+  $('mainBombBadge').querySelector('.bomb-caption').textContent = own ? `[${bomb.cleared >= 1 ? 1 : 0}/1]按B传递！` : '';
+  $('mainBoard').parentElement.classList.toggle('has-bomb', Boolean(own));
+  $('mainBoard').parentElement.classList.toggle('bomb-lit', Boolean(own && lit));
+  $('bombPanel').classList.toggle('is-holder', Boolean(own));
+  text('bombHolderLabel', own ? '炸弹在你手里' : holder ? `炸弹在 ${holder.name} 手里` : '等待炸弹');
+  text('bombProgress', own ? bomb.cleared >= 1 ? '可以传递！按 B 或点右侧按钮' : '再消 1 行可传递 · 按 B 或点按钮' : '观察右侧炸弹标记，闪烁越急通常越危险');
+  $('passBombButton').disabled = !state.connected || !own || !me()?.game?.alive || bomb.cleared < 1;
+  for (const [id, node] of monitors) {
+    const carrying = enabled && bomb?.holderId === id;
+    node.classList.toggle('has-bomb', Boolean(carrying));
+    const badge = node.querySelector('.bomb-badge');
+    show(badge, Boolean(carrying));
+    badge.classList.toggle('is-lit', Boolean(carrying && lit));
+    badge.querySelector('.bomb-caption').textContent = carrying ? bomb.cleared >= 1 ? '可传递' : '消 1 行可传' : '';
+    node.classList.toggle('bomb-lit', Boolean(carrying && lit));
+    const canvas = node.querySelector('canvas');
+    canvas.classList.toggle('has-bomb', Boolean(carrying));
+    canvas.classList.toggle('bomb-lit', Boolean(carrying && lit));
+  }
+}
+function passBomb() {
+  if (!$('passBombButton').disabled) send({ type: 'passBomb' });
+}
+
 function renderGame(self) {
   const room = state.room;
   const game = self.game;
@@ -716,6 +803,7 @@ function renderGame(self) {
   $('mainBoard').parentElement.classList.toggle('is-danger', danger || game.pending > 0);
   drawBoard($('mainBoard'), game, true);
   renderMonitors(self, target);
+  renderBomb();
   text('spectatorCount', `${room.players.filter(player => player.game?.alive).length}/${room.players.length}`);
   text('gameStateLabel', room.status === 'finished' ? '本轮已结束' : room.status === 'countdown' ? '准备开始' : '对战进行中');
   document.querySelectorAll('[data-action]').forEach(button => { button.disabled = !activeGame(); });
@@ -742,6 +830,9 @@ function renderMonitors(self, target) {
       const detail = element('div', 'monitor-detail');
       detail.append(element('span', 'monitor-state'), element('strong', 'monitor-lines'), element('span', 'monitor-score'), element('span', 'monitor-pending'));
       body.append(canvas, detail);
+      const badge = decorateBomb(element('span', 'bomb-badge is-hidden'));
+      badge.setAttribute('aria-hidden', 'true');
+      detail.replaceChildren(badge, ...detail.children);
       node.append(heading, body);
       let pointer = null;
       node.addEventListener('pointerdown', event => {
@@ -806,7 +897,7 @@ function renderClock() {
     const deadline = room.coopEndsAt || room.nextWaveAt;
     special.push(`${room.coopEndsAt ? '过关倒计时' : '下一波'} ${Math.max(0, Math.ceil((deadline - now) / 1000))} 秒`);
   }
-  if (room.nextEnvironmentAt) special.push(`环境上涨 ${Math.max(0, Math.ceil((room.nextEnvironmentAt - now) / 1000))} 秒后`);
+  if (room.nextEnvironmentAt) special.push(`乱扔垃圾 ${Math.max(0, Math.ceil((room.nextEnvironmentAt - now) / 1000))} 秒后`);
   if (room.bountyId && room.settings.mode !== 'practice') special.push(`悬赏 ${room.players.find(player => player.id === room.bountyId)?.name || '等待轮换'} · ${Math.max(0, Math.ceil((room.nextBountyAt - now) / 1000))} 秒`);
   if (isManual() && room.settings.cooldown && me()?.targetChangedAt) {
     const seconds = Math.ceil((me().targetChangedAt + 3000 - now) / 1000);
@@ -825,6 +916,8 @@ function renderCountdown(room) {
   text('countdownAttack', settings.mode === 'coop' ? '消行自动救援队友' : !Rules.hostile(settings) ? '本局不发送攻击' : Rules.attacks[settings.attack][0]);
   text('countdownAttackHint', settings.mode === 'coop' ? '先抵消自己的来袭，余量帮助压力最大的队友，不增加操作键。' : !Rules.hostile(settings) ? '同样的方块序列，无需选择攻击目标。' : Rules.attacks[settings.attack][1]);
   const defense = ['灰色障碍补齐缺口即可消除'];
+  if (settings.randomGarbage) defense.push('乱扔垃圾：每 30 秒增加 1 行环境障碍');
+  if (settings.hotPotato) defense.push('持有炸弹累计消 1 行，按 B 或点按钮传递；爆炸立即加 1 行');
   if ((Rules.hostile(settings) || settings.mode === 'coop') && settings.counter) defense.push('消行先抵消来袭');
   if ((Rules.hostile(settings) || settings.mode === 'coop') && settings.digBonus) defense.push('挖掘额外抵消');
   if (settings.cleanse && settings.mode !== 'dig') defense.push('6 能量按 V 净化');
@@ -924,6 +1017,7 @@ const KEY_ACTIONS = {
 };
 window.addEventListener('keydown', event => {
   if (!activeGame() || event.ctrlKey || event.metaKey || event.altKey || /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
+  if (event.code === 'KeyB') { event.preventDefault(); if (!event.repeat) passBomb(); return; }
   if (event.code === 'KeyT') { event.preventDefault(); if (!event.repeat) cycleTarget(); return; }
   const value = KEY_ACTIONS[event.code];
   if (!value) return;
@@ -1020,6 +1114,21 @@ $('leaderboardModeSelect').addEventListener('change', () => {
 $('refreshLeaderboardButton').addEventListener('click', () => {
   if (send({ type: 'leaderboard' })) text('leaderboardStatus', '正在刷新最高分…');
 });
+$('openRuleOptions').addEventListener('click', () => {
+  if (state.room?.status !== 'lobby') return;
+  text('ruleOptionsMessage', '');
+  renderRuleOptions();
+  if (!$('ruleOptionsDialog').open) $('ruleOptionsDialog').showModal();
+  $('closeRuleOptions').focus();
+});
+$('closeRuleOptions').addEventListener('click', closeRuleOptions);
+$('ruleOptionsDialog').addEventListener('keydown', event => {
+  if (event.key === 'Escape') { event.preventDefault(); closeRuleOptions(); }
+});
+$('ruleOptionsDialog').addEventListener('click', event => {
+  const rect = $('ruleOptionsDialog').getBoundingClientRect();
+  if (event.target === $('ruleOptionsDialog') && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) closeRuleOptions();
+});
 $('findRoomsButton').addEventListener('click', openRoomFinder);
 $('closeRoomFinder').addEventListener('click', closeRoomFinder);
 $('roomFinder').addEventListener('keydown', event => {
@@ -1029,7 +1138,6 @@ $('roomFinder').addEventListener('click', event => {
   const rect = $('roomFinder').getBoundingClientRect();
   if (event.target === $('roomFinder') && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) closeRoomFinder();
 });
-$('customRules').addEventListener('toggle', alignChatHeight);
 window.addEventListener('resize', alignChatHeight);
 if (window.ResizeObserver) new ResizeObserver(alignChatHeight).observe($('waitingPanel'));
 $('roomSearchInput').addEventListener('input', renderDirectory);
@@ -1055,6 +1163,8 @@ $('copyRoomButton').addEventListener('click', async () => {
 });
 $('teamSelect').addEventListener('change', event => send({ type: 'team', team: event.target.value }));
 $('cleanseButton').addEventListener('click', () => action('cleanse'));
+decorateBomb($('mainBombBadge'));
+$('passBombButton').addEventListener('click', passBomb);
 $('endPracticeButton').addEventListener('click', () => send({ type: 'endPractice' }));
 setupSettings();
 $('nameInput').value = Rules.normalizeName(saved('block-relay-name'));

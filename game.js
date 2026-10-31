@@ -22,6 +22,19 @@ function enqueueGarbage(game, lines, now = Date.now(), source = {}) {
   game.pending += lines;
 }
 
+function explodeGarbage(game, lines = 3) {
+  if (!game.alive) return;
+  const hole = Math.floor(game.garbageRandom() * WIDTH);
+  for (let i = 0; i < lines; i++) {
+    if (game.board.shift().some(Boolean)) game.alive = false;
+    game.board.push(Array.from({ length: WIDTH }, (_, x) => x === hole ? null : 'G'));
+  }
+  game.received += lines;
+  // Keep the falling piece above the rising stack without resetting its lock delay.
+  game.active = { ...game.active, y: game.active.y - lines };
+  if (collides(game)) game.alive = false;
+}
+
 function cancelGarbage(game, amount) {
   let cancelled = 0;
   while (amount > 0 && game.garbage.length) {
@@ -193,7 +206,7 @@ function lock(game, now = Date.now(), random = Math.random) {
   game.received += incoming;
   game.holdUsed = false;
   if (game.alive) spawn(game);
-  return { locked: true, cleared, clearedRows, attack, dug, purified, hits, incoming,
+  return { locked: true, cleared, clearedRows, attack: game.settings.mode === 'sprint' ? 0 : attack, dug, purified, hits, incoming,
     cancelled: game.cancelled - cancelledBefore };
 }
 
@@ -273,4 +286,4 @@ function snapshotGame(game) {
   };
 }
 
-module.exports = { WIDTH, HEIGHT, SHAPES, createGame, collides, act, lock, tickGame, snapshotGame, enqueueGarbage, cancelGarbage };
+module.exports = { WIDTH, HEIGHT, SHAPES, createGame, collides, act, lock, tickGame, snapshotGame, enqueueGarbage, cancelGarbage, explodeGarbage };
