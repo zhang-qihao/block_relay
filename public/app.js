@@ -53,7 +53,7 @@ function renderLeaderboard() {
   text('leaderboardStatus', !state.connected ? '连接中断，重连后更新榜单。' : !leaderboardLoaded ? '正在获取最高分…' :
     leaderboardStorage === 'error' ? '榜单存储异常，成绩可能尚未保存，请联系房主检查服务日志。' :
     !entries.length ? '' :
-    leaderboardStorage === 'pending' ? '新纪录正在保存…' : leaderboardStorage === 'memory' ? '当前为临时榜单，重启后不保留。' : '');
+    leaderboardStorage === 'memory' ? '当前为临时榜单，重启后不保留。' : '');
 }
 let chatCode = null;
 let chatItems = [];

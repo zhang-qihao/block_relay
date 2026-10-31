@@ -111,6 +111,12 @@ function browserFixture(width = 1200) {
   return { nodes, ws, room, actions, audioEvents, viewport, scrolls, document, context, timers: timerCallbacks, windowEvents, body: document.body, receive: () => ws.receive({ type: 'state', room }) };
 }
 
+test('pending leaderboard saves stay visually silent', () => {
+  const { nodes, ws } = browserFixture();
+  ws.receive({ type: 'leaderboardList', storage: 'pending', entries: [{ name: '玩家', score: 100, mode: 'survival', at: 1 }] });
+  assert.equal(nodes.get('leaderboardStatus').textContent, '');
+});
+
 test('viewport lock is scoped to waiting room and released on match or leave', () => {
   const { room, receive, ws, body } = browserFixture();
   receive();
